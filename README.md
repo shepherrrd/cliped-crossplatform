@@ -365,7 +365,7 @@ git push origin main
 
 3. **Users can then install with**:
 ```bash
-brew tap shepherrrd/cliped-crossplatform
+brew tap shepherrrd/cliped-crossplatform https://github.com/shepherrrd/cliped-crossplatform.git
 brew install cliped-crossplatform
 ```
 

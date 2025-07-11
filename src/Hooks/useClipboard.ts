@@ -21,7 +21,7 @@ export function useClipboard() {
   const [loading, setLoading] = useState(true);
   const [isEnabled, setIsEnabled] = useState(true);
   const [notification, setNotification] = useState<NotificationState | null>(null);
-  const [lastDeletedItems, setLastDeletedItems] = useState<ClipboardItem[]>([]);
+  const [_lastDeletedItems, setLastDeletedItems] = useState<ClipboardItem[]>([]);
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
 
   // Load initial clipboard history and monitoring status

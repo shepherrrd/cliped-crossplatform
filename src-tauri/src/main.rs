@@ -244,8 +244,32 @@ fn main() {
                                     },
                                     MessageType::ConnectionRequest => {
                                         println!("Connection request from: {} ({})", network_msg.device_name, network_msg.device_id);
-                                        // Handle connection request - add to pending connections
-                                        // TODO: Emit event to frontend to show connection request dialog
+                                        
+                                        // Add to pending connections
+                                        let app_state = app_handle_for_udp.state::<AppState>();
+                                        let sender_ip = addr.ip().to_string();
+                                        let requesting_device = Device {
+                                            id: network_msg.device_id,
+                                            name: network_msg.device_name.clone(),
+                                            icon: "laptop".to_string(),
+                                            ip: sender_ip,
+                                            status: DeviceStatus::Pending,
+                                            sync_mode: SyncMode::Disabled,
+                                            last_seen: get_current_timestamp(),
+                                        };
+                                        
+                                        // Add to pending connections with proper scope
+                                        {
+                                            if let Ok(mut pending) = app_state.pending_connections.lock() {
+                                                if !pending.iter().any(|d| d.id == network_msg.device_id) {
+                                                    pending.push(requesting_device);
+                                                    println!("Added connection request from: {}", network_msg.device_name);
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Emit event to frontend
+                                        let _ = app_handle_for_udp.emit("connection-request", &network_msg);
                                     },
                                     MessageType::ConnectionAccept => {
                                         println!("Connection accepted by: {} ({})", network_msg.device_name, network_msg.device_id);

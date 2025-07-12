@@ -19,12 +19,14 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
   const [devices, setDevices] = useState<Device[]>([]);
   const [localDevice, setLocalDevice] = useState<Device | null>(null);
   const [availableDevices, setAvailableDevices] = useState<Device[]>([]);
+  const [pendingConnections, setPendingConnections] = useState<Device[]>([]);
   const [isEditingName, setIsEditingName] = useState(false);
   const [newDeviceName, setNewDeviceName] = useState("");
   const [isDiscovering, setIsDiscovering] = useState(false);
 
   useEffect(() => {
     loadDevices();
+    loadPendingConnections();
     discoverDevices();
   }, []);
 
@@ -45,11 +47,26 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     }
   };
 
+  const loadPendingConnections = async () => {
+    try {
+      const pending = await invoke<Device[]>("get_pending_connections");
+      setPendingConnections(pending);
+    } catch (error) {
+      console.error("Failed to load pending connections:", error);
+    }
+  };
+
   const discoverDevices = async () => {
     setIsDiscovering(true);
     try {
       const discovered = await invoke<Device[]>("discover_devices");
-      setAvailableDevices(discovered);
+      // Filter out devices that are already connected or pending
+      const connectedIds = devices.map((d) => d.id);
+      const pendingIds = pendingConnections.map((d) => d.id);
+      const filteredDiscovered = discovered.filter(
+        (device) => !connectedIds.includes(device.id) && !pendingIds.includes(device.id)
+      );
+      setAvailableDevices(filteredDiscovered);
     } catch (error) {
       console.error("Failed to discover devices:", error);
     } finally {
@@ -78,9 +95,36 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
         targetDevice: device,
       });
       alert(`Connection request sent to ${device.name}!`);
+      // Remove from available devices and refresh pending connections
+      setAvailableDevices((prev) => prev.filter((d) => d.id !== device.id));
+      await loadPendingConnections();
     } catch (error) {
       console.error("Failed to send connection request:", error);
       alert("Failed to send connection request");
+    }
+  };
+
+  const acceptConnection = async (deviceId: number) => {
+    try {
+      await invoke("accept_connection", { deviceId });
+      // Refresh all lists
+      await loadDevices();
+      await loadPendingConnections();
+      await discoverDevices();
+    } catch (error) {
+      console.error("Failed to accept connection:", error);
+      alert("Failed to accept connection");
+    }
+  };
+
+  const denyConnection = async (deviceId: number) => {
+    try {
+      await invoke("deny_connection", { deviceId });
+      // Refresh pending connections
+      await loadPendingConnections();
+    } catch (error) {
+      console.error("Failed to deny connection:", error);
+      alert("Failed to deny connection");
     }
   };
 
@@ -167,6 +211,40 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
               </p>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Pending Connection Requests */}
+      {pendingConnections.length > 0 && (
+        <div className="pending-connections">
+          <h2>Pending Connection Requests</h2>
+          <ul>
+            {pendingConnections.map((device) => (
+              <li key={device.id} className="device-item pending">
+                <div className="device-avatar">🔔</div>
+                <div className="device-details">
+                  <p>
+                    <strong>{device.name}</strong> wants to connect
+                  </p>
+                  <p>IP: {device.ip}</p>
+                </div>
+                <div className="connection-actions">
+                  <button
+                    className="accept-button"
+                    onClick={() => acceptConnection(device.id)}
+                  >
+                    ✓ Accept
+                  </button>
+                  <button
+                    className="deny-button"
+                    onClick={() => denyConnection(device.id)}
+                  >
+                    ✕ Deny
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

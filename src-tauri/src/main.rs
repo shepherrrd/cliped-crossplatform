@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::net::UdpSocket;
 use tokio::time::{sleep, Duration};
 use local_ip_address::local_ip;
-use rusqlite::{Connection, Result as SqlResult};
+use rusqlite::Connection;
 use directories::ProjectDirs;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -82,9 +82,6 @@ struct AppState {
 
 // Utility functions
 fn init_database() -> Result<String, String> {
-    use rusqlite::{Connection, Result as SqlResult};
-    use directories::ProjectDirs;
-    
     if let Some(proj_dirs) = ProjectDirs::from("com", "cliped", "cliped") {
         let data_dir = proj_dirs.data_dir();
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
@@ -152,6 +149,60 @@ fn generate_random_suffix() -> String {
 
 fn get_local_ip() -> String {
     local_ip().map(|ip| ip.to_string()).unwrap_or_else(|_| "127.0.0.1".to_string())
+}
+
+fn load_clipboard_history_from_db(db_path: &str) -> Result<Vec<ClipboardItem>, String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    
+    let mut stmt = conn.prepare(
+        "SELECT id, content, timestamp, device, content_type FROM clipboard_items ORDER BY timestamp DESC LIMIT 100"
+    ).map_err(|e| e.to_string())?;
+    
+    let clipboard_iter = stmt.query_map([], |row| {
+        Ok(ClipboardItem {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            timestamp: row.get(2)?,
+            device: row.get(3)?,
+            content_type: row.get(4)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut items = Vec::new();
+    for item in clipboard_iter {
+        items.push(item.map_err(|e| e.to_string())?);
+    }
+    
+    Ok(items)
+}
+
+fn save_clipboard_item_to_db(db_path: &str, item: &ClipboardItem) -> Result<(), String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    
+    conn.execute(
+        "INSERT OR REPLACE INTO clipboard_items (id, content, timestamp, device, content_type) VALUES (?1, ?2, ?3, ?4, ?5)",
+        [&item.id, &item.content, &item.timestamp, &item.device, &item.content_type],
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+fn clear_clipboard_history_from_db(db_path: &str) -> Result<(), String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    
+    conn.execute("DELETE FROM clipboard_items", [])
+        .map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+fn delete_clipboard_item_from_db(db_path: &str, item_id: &str) -> Result<(), String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    
+    conn.execute("DELETE FROM clipboard_items WHERE id = ?1", [item_id])
+        .map_err(|e| e.to_string())?;
+    
+    Ok(())
 }
 
 async fn handle_network_discovery(_app_handle: AppHandle, _state: Arc<AppState>) {
@@ -328,6 +379,14 @@ fn main() {
                                                     }
                                                 }
                                                 
+                                                // Save synced item to database
+                                                let db_path = app_state.db_path.lock().unwrap().clone();
+                                                if let Some(db_path) = db_path {
+                                                    if let Err(e) = save_clipboard_item_to_db(&db_path, &synced_item) {
+                                                        eprintln!("Failed to save synced clipboard item to database: {}", e);
+                                                    }
+                                                }
+                                                
                                                 // Emit to frontend
                                                 let _ = app_handle_for_udp.emit("clipboard-updated", &synced_item);
                                                 println!("Added synced clipboard item from {}", network_msg.device_name);
@@ -376,9 +435,6 @@ fn main() {
 
             // Start clipboard monitoring after a short delay to ensure runtime is ready
             let state: State<AppState> = app.state();
-            let clipboard_history = Arc::clone(&state.clipboard_history);
-            let last_content = Arc::clone(&state.last_clipboard_content);
-            let enabled = Arc::clone(&state.enabled);
             
             let app_handle_for_monitor = app_handle.clone();
             let clipboard_history_clone = Arc::clone(&state.clipboard_history);
@@ -392,15 +448,30 @@ fn main() {
                 monitor_clipboard(app_handle_for_monitor, clipboard_history_clone, last_content_clone, enabled_clone, devices_clone, local_device_clone).await;
             });
 
-            // Initialize database
+            // Initialize database and load existing history
             match init_database() {
-                Ok(db_path) => {
-                    println!("Database initialized at: {}", db_path);
+                Ok(path) => {
+                    println!("Database initialized at: {}", path);
+                    
+                    // Load existing clipboard history from database
+                    match load_clipboard_history_from_db(&path) {
+                        Ok(history) => {
+                            let mut clipboard_state = state.clipboard_history.lock().unwrap();
+                            *clipboard_state = history;
+                            println!("Loaded {} items from database", clipboard_state.len());
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to load clipboard history: {}", e);
+                        }
+                    }
+                    
+                    // Store the database path
+                    *state.db_path.lock().unwrap() = Some(path.clone());
                 },
                 Err(e) => {
                     eprintln!("Failed to initialize database: {}", e);
                 }
-            }
+            };
 
             // Generate and set local device info
             let local_device = generate_device_info();
@@ -456,6 +527,13 @@ async fn monitor_clipboard(
     println!("Clipboard monitoring started!");
     let mut clipboard = Clipboard::new().unwrap();
     
+    // Get database path
+    let db_path = {
+        let app_state = app_handle.state::<AppState>();
+        let x = app_state.db_path.lock().unwrap().clone();
+        x
+    };
+    
     loop {
         sleep(Duration::from_millis(500)).await;
         
@@ -502,6 +580,13 @@ async fn monitor_clipboard(
                     
                     println!("Clipboard history now has {} items", history.len());
                 } // Drop the history lock here
+
+                // Save to database
+                if let Some(ref db_path) = db_path {
+                    if let Err(e) = save_clipboard_item_to_db(db_path, &item) {
+                        eprintln!("Failed to save clipboard item to database: {}", e);
+                    }
+                }
 
                 // Sync to all connected devices
                 sync_to_connected_devices(&devices, &local_device, &item).await;
@@ -569,15 +654,41 @@ async fn get_clipboard_history(state: State<'_, AppState>) -> Result<Vec<Clipboa
 
 #[tauri::command]
 async fn clear_clipboard_history(state: State<'_, AppState>) -> Result<(), String> {
-    let mut history = state.clipboard_history.lock().unwrap();
-    history.clear();
+    // Clear in-memory history
+    {
+        let mut history = state.clipboard_history.lock().unwrap();
+        history.clear();
+    }
+    
+    // Clear database
+    let db_path = state.db_path.lock().unwrap().clone();
+    if let Some(db_path) = db_path {
+        if let Err(e) = clear_clipboard_history_from_db(&db_path) {
+            eprintln!("Failed to clear clipboard history from database: {}", e);
+            return Err(e);
+        }
+    }
+    
     Ok(())
 }
 
 #[tauri::command]
 async fn delete_clipboard_item(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let mut history = state.clipboard_history.lock().unwrap();
-    history.retain(|item| item.id != id);
+    // Delete from in-memory history
+    {
+        let mut history = state.clipboard_history.lock().unwrap();
+        history.retain(|item| item.id != id);
+    }
+    
+    // Delete from database
+    let db_path = state.db_path.lock().unwrap().clone();
+    if let Some(db_path) = db_path {
+        if let Err(e) = delete_clipboard_item_from_db(&db_path, &id) {
+            eprintln!("Failed to delete clipboard item from database: {}", e);
+            return Err(e);
+        }
+    }
+    
     Ok(())
 }
 

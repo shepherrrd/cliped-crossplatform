@@ -27,3 +27,7 @@ setup-distribution.sh
 build-linux-docker.sh
 release.sh
 build-and-sign.sh
+build-intel-mac-final.sh
+build-intel-mac-clean.sh
+.gitignore
+build-intel-mac.sh

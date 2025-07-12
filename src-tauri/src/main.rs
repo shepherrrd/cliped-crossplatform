@@ -52,6 +52,7 @@ enum MessageType {
     ConnectionRequest, // Request to connect
     ConnectionAccept,  // Accept connection
     ConnectionDeny,    // Deny connection
+    ConnectionRemove,  // Device disconnected/removed
     ClipboardSync,    // Sync clipboard item
     Heartbeat,        // Keep connection alive
 }
@@ -276,7 +277,28 @@ fn main() {
                                     },
                                     MessageType::ConnectionAccept => {
                                         println!("Connection accepted by: {} ({})", network_msg.device_name, network_msg.device_id);
-                                        // Handle connection acceptance
+                                        
+                                        // When we receive an acceptance, add the accepting device to our connected devices
+                                        let app_state = app_handle_for_udp.state::<AppState>();
+                                        let sender_ip = addr.ip().to_string();
+                                        let accepting_device = Device {
+                                            id: network_msg.device_id,
+                                            name: network_msg.device_name.clone(),
+                                            icon: "laptop".to_string(),
+                                            ip: sender_ip,
+                                            status: DeviceStatus::Connected,
+                                            sync_mode: SyncMode::PartialSync, // Default to partial sync
+                                            last_seen: get_current_timestamp(),
+                                        };
+                                        
+                                        {
+                                            let mut devices = app_state.devices.lock().unwrap();
+                                            devices.insert(network_msg.device_id, accepting_device);
+                                            println!("Added accepted connection: {} at {}", network_msg.device_name, addr.ip());
+                                        }
+                                        
+                                        // Emit event to frontend to refresh device list
+                                        let _ = app_handle_for_udp.emit("connection-accepted", &network_msg.device_id);
                                     },
                                     MessageType::ConnectionDeny => {
                                         println!("Connection denied by: {} ({})", network_msg.device_name, network_msg.device_id);
@@ -311,6 +333,20 @@ fn main() {
                                                 println!("Added synced clipboard item from {}", network_msg.device_name);
                                             }
                                         }
+                                    },
+                                    MessageType::ConnectionRemove => {
+                                        println!("Connection removed by: {} ({})", network_msg.device_name, network_msg.device_id);
+                                        
+                                        // Remove the device from our connected devices list
+                                        let app_state = app_handle_for_udp.state::<AppState>();
+                                        {
+                                            let mut devices = app_state.devices.lock().unwrap();
+                                            devices.remove(&network_msg.device_id);
+                                            println!("Removed disconnected device: {}", network_msg.device_name);
+                                        }
+                                        
+                                        // Emit event to frontend to refresh device list
+                                        let _ = app_handle_for_udp.emit("device-disconnected", &network_msg.device_id);
                                     },
                                     MessageType::Heartbeat => {
                                         println!("Heartbeat from: {} ({})", network_msg.device_name, network_msg.device_id);
@@ -590,9 +626,48 @@ fn add_device(state: State<AppState>, device: Device) {
 }
 
 #[tauri::command]
-fn remove_device(state: State<AppState>, device_id: u32) {
-    let mut devices = state.devices.lock().unwrap();
-    devices.remove(&device_id);
+async fn remove_device(state: State<'_, AppState>, device_id: u32) -> Result<(), String> {
+    // Get device info before removing it
+    let device_to_remove = {
+        let devices = state.devices.lock().unwrap();
+        devices.get(&device_id).cloned()
+    };
+    
+    if let Some(device) = device_to_remove {
+        // Get local device info for the disconnection message
+        let local_device = {
+            let local = state.local_device.lock().unwrap();
+            local.clone()
+        };
+        
+        // Send disconnection message to the device being removed
+        if let Some(local) = local_device {
+            let message = NetworkMessage {
+                msg_type: MessageType::ConnectionRemove,
+                device_id: local.id,
+                device_name: local.name,
+                data: None,
+            };
+            
+            if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+                let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+                let target_addr = format!("{}:51847", device.ip);
+                let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
+                println!("Sent disconnection notice to {} at {}", device.name, device.ip);
+            }
+        }
+        
+        // Remove from local devices list
+        {
+            let mut devices = state.devices.lock().unwrap();
+            devices.remove(&device_id);
+        }
+        
+        println!("Removed device: {} ({})", device.name, device_id);
+        Ok(())
+    } else {
+        Err("Device not found".to_string())
+    }
 }
 
 #[tauri::command]

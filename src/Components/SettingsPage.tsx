@@ -33,13 +33,28 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     // Listen for connection request events
     const setupEventListener = async () => {
       try {
-        const unlisten = await listen("connection-request-received", () => {
+        const unlistenConnectionRequest = await listen("connection-request-received", () => {
           console.log("New connection request received, refreshing...");
           loadPendingConnections();
         });
         
-        // Cleanup listener on unmount
-        return () => unlisten();
+        const unlistenConnectionAccepted = await listen("connection-accepted", () => {
+          console.log("Connection was accepted, refreshing devices...");
+          loadDevices();
+          loadPendingConnections();
+        });
+        
+        const unlistenDeviceDisconnected = await listen("device-disconnected", () => {
+          console.log("Device disconnected, refreshing...");
+          loadDevices();
+        });
+        
+        // Cleanup listeners on unmount
+        return () => {
+          unlistenConnectionRequest();
+          unlistenConnectionAccepted();
+          unlistenDeviceDisconnected();
+        };
       } catch (error) {
         console.error("Failed to setup event listener:", error);
       }
@@ -181,10 +196,16 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     });
   };
 
-  const removeDevice = (id: number) => {
-    invoke("remove_device", { deviceId: id }).then(() => {
-      setDevices(devices.filter((device) => device.id !== id));
-    });
+  const removeDevice = async (id: number) => {
+    try {
+      await invoke("remove_device", { deviceId: id });
+      // Refresh the connected devices list
+      await loadDevices();
+      console.log("Device removed successfully");
+    } catch (error) {
+      console.error("Failed to remove device:", error);
+      alert("Failed to remove device");
+    }
   };
 
   return (
@@ -307,7 +328,16 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       </div>
 
       <div className="connected-devices">
-        <h2>Connected Devices</h2>
+        <div className="section-header">
+          <h2>Connected Devices</h2>
+          <button
+            className="refresh-button"
+            onClick={loadDevices}
+            title="Refresh connected devices"
+          >
+            🔄 Refresh
+          </button>
+        </div>
         {devices.length === 0 ? (
           <p className="no-devices">No connected devices</p>
         ) : (

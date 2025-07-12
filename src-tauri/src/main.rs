@@ -236,6 +236,7 @@ fn main() {
                                         // Send response
                                         if let Some(response) = response_msg {
                                             if let Ok(response_json) = serde_json::to_string(&response) {
+                                                // Send response back to the sender's port (not port 8080)
                                                 let _ = udp_socket.send_to(response_json.as_bytes(), addr).await;
                                                 println!("Sent discovery response to {}", addr);
                                             }
@@ -717,6 +718,10 @@ async fn discover_devices(state: State<'_, AppState>) -> Result<Vec<Device>, Str
         if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
             let message_json = serde_json::to_string(&discovery_message).map_err(|e| e.to_string())?;
             
+            // Get the local port this socket is bound to
+            let local_port = socket.local_addr().map_err(|e| e.to_string())?.port();
+            println!("Discovery socket listening on port {}", local_port);
+            
             // Broadcast to local network
             let local_ip = get_local_ip();
             let ip_parts: Vec<&str> = local_ip.split('.').collect();
@@ -736,8 +741,48 @@ async fn discover_devices(state: State<'_, AppState>) -> Result<Vec<Device>, Str
                 println!("Discovery broadcast sent to network {}.x", network_base);
             }
             
-            // Wait for responses
-            tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+            // Listen for responses on this socket
+            let mut buf = [0; 1024];
+            let start_time = tokio::time::Instant::now();
+            let timeout = tokio::time::Duration::from_millis(3000); // 3 second timeout
+            
+            while tokio::time::Instant::now().duration_since(start_time) < timeout {
+                // Set a shorter timeout for each receive attempt
+                let receive_timeout = tokio::time::timeout(
+                    tokio::time::Duration::from_millis(100), 
+                    socket.recv_from(&mut buf)
+                ).await;
+                
+                if let Ok(Ok((len, addr))) = receive_timeout {
+                    let message_str = String::from_utf8_lossy(&buf[..len]);
+                    println!("Discovery response from {}: {}", addr, message_str);
+                    
+                    // Try to parse as NetworkMessage
+                    if let Ok(network_msg) = serde_json::from_str::<NetworkMessage>(&message_str) {
+                        if matches!(network_msg.msg_type, MessageType::Discovery) && network_msg.device_id != local.id {
+                            let sender_ip = addr.ip().to_string();
+                            let discovered_device = Device {
+                                id: network_msg.device_id,
+                                name: network_msg.device_name.clone(),
+                                icon: "laptop".to_string(),
+                                ip: sender_ip.clone(),
+                                status: DeviceStatus::Offline,
+                                sync_mode: SyncMode::Disabled,
+                                last_seen: get_current_timestamp(),
+                            };
+                            
+                            // Add to discovered devices
+                            {
+                                let mut discovered = state.discovered_devices.lock().unwrap();
+                                if !discovered.iter().any(|d| d.id == network_msg.device_id) {
+                                    discovered.push(discovered_device);
+                                    println!("Added discovered device: {} at {}", network_msg.device_name, sender_ip);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             
             // Return discovered devices
             let discovered = state.discovered_devices.lock().unwrap();

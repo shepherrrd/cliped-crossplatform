@@ -11,7 +11,7 @@ console.log("Root element:", rootElement);
 if (rootElement) {
   const root = ReactDOM.createRoot(rootElement);
   console.log("Created React root, about to render App");
-  
+
   root.render(
     <React.StrictMode>
       <App />

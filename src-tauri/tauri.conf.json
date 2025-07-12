@@ -14,10 +14,10 @@
     "windows": [
       {
         "label": "cliped",
-        "transparent": true,        
-        "decorations": true,        
+        "transparent": true,
+        "decorations": true,
         "fullscreen": false,
-        "width": 500,                
+        "width": 500,
         "height": 650,
         "resizable": false,
         "alwaysOnTop": true,

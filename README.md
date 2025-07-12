@@ -34,11 +34,12 @@ A modern, beautiful clipboard manager built with Rust (Tauri) and React. Feature
 #### Option 1: Install via Package Manager (Recommended)
 
 ##### macOS (Homebrew)
+
 ```bash
 # Add the tap for the cross-platform version
 brew tap shepherrrd/cliped-crossplatform
 
-# Install Cliped Cross-Platform  
+# Install Cliped Cross-Platform
 brew install cliped-crossplatform
 
 # Run (binary is installed as 'cliped')
@@ -46,6 +47,7 @@ cliped
 ```
 
 ##### Linux (Debian/Ubuntu)
+
 ```bash
 # Download and install .deb package from cliped-crossplatform repo
 wget https://github.com/shepherrrd/cliped-crossplatform/releases/latest/download/cliped_amd64.deb
@@ -56,6 +58,7 @@ cliped
 ```
 
 ##### Linux (Arch/Manjaro)
+
 ```bash
 # Install from AUR (cliped-crossplatform package)
 yay -S cliped-crossplatform
@@ -96,6 +99,7 @@ npm run tauri build
 ### Prerequisites for Development
 
 #### macOS
+
 ```bash
 # Install Xcode Command Line Tools
 xcode-select --install
@@ -108,6 +112,7 @@ brew install node
 ```
 
 #### Windows
+
 ```bash
 # Install Rust
 # Visit https://rustup.rs/ and follow the instructions
@@ -120,6 +125,7 @@ brew install node
 ```
 
 #### Linux (Ubuntu/Debian)
+
 ```bash
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -146,6 +152,7 @@ sudo apt install -y \
 ```
 
 #### Linux (Fedora)
+
 ```bash
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -165,6 +172,7 @@ sudo dnf install -y \
 ```
 
 #### Linux (Arch)
+
 ```bash
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -319,6 +327,7 @@ npm run tauri build
 ### Homebrew (macOS)
 
 1. **Create a Homebrew tap**:
+
 ```bash
 # Create the repository
 mkdir homebrew-cliped
@@ -357,6 +366,7 @@ EOF
 ```
 
 2. **Publish the tap**:
+
 ```bash
 git add .
 git commit -m "Add Cliped formula"
@@ -364,6 +374,7 @@ git push origin main
 ```
 
 3. **Users can then install with**:
+
 ```bash
 brew tap shepherrrd/cliped-crossplatform https://github.com/shepherrrd/cliped-crossplatform.git
 brew install cliped-crossplatform
@@ -372,6 +383,7 @@ brew install cliped-crossplatform
 ### AUR (Arch Linux)
 
 1. **Create PKGBUILD**:
+
 ```bash
 cat > PKGBUILD << 'EOF'
 pkgname=cliped-crossplatform
@@ -401,11 +413,13 @@ EOF
 ### APT Repository (Ubuntu/Debian)
 
 1. **Build .deb package**:
+
 ```bash
 npm run tauri build
 ```
 
 2. **Create APT repository**:
+
 ```bash
 # Create repository structure
 mkdir -p apt-repo/pool/main/c/cliped-crossplatform
@@ -437,6 +451,7 @@ EOF
 ### Common Issues
 
 #### "Failed to initialize clipboard monitoring"
+
 ```bash
 # Linux: Install required packages
 sudo apt install xclip xsel  # Debian/Ubuntu
@@ -445,6 +460,7 @@ sudo pacman -S xclip xsel    # Arch
 ```
 
 #### "App won't start"
+
 ```bash
 # Check if port 1420 is available
 lsof -i :1420
@@ -454,6 +470,7 @@ pkill -f "cliped"
 ```
 
 #### "Build fails on Linux"
+
 ```bash
 # Install missing webkit dependencies
 sudo apt install libwebkit2gtk-4.0-dev libgtk-3-dev
@@ -489,9 +506,9 @@ if history.len() > 50 {  // Reduced from 100
 This project uses a specific naming convention to distinguish it from other versions:
 
 - **Repository/Website Name**: `cliped-crossplatform`
-- **Package Names**: 
+- **Package Names**:
   - Homebrew: `cliped-crossplatform`
-  - AUR: `cliped-crossplatform` 
+  - AUR: `cliped-crossplatform`
   - Debian/Ubuntu: Package built from `cliped-crossplatform` repo
 - **Installed Binary**: `cliped` (for user convenience)
 - **App Display Name**: "Cliped" (clean UI name)

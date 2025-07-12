@@ -1,27 +1,31 @@
-import { useState } from 'react';
-import ClipboardItemCard from './ClipboardItem';
-import Notification from './Notification';
-import ConfirmDialog from './ConfirmDialog';
-import { useClipboard } from '../Hooks/useClipboard';
+import { useState } from "react";
+import ClipboardItemCard from "./ClipboardItem";
+import Notification from "./Notification";
+import ConfirmDialog from "./ConfirmDialog";
+import { useClipboard } from "../Hooks/useClipboard";
 
-export default function ClipboardList() {
-  const { 
-    items, 
-    loading, 
-    clearAll, 
-    deleteItem, 
-    selectItem, 
-    isEnabled, 
-    toggleMonitoring, 
-    notification, 
-    undoLastAction, 
+interface ClipboardListProps {
+  onOpenSettings: () => void;
+}
+
+export default function ClipboardList({ onOpenSettings }: ClipboardListProps) {
+  const {
+    items,
+    loading,
+    clearAll,
+    deleteItem,
+    selectItem,
+    isEnabled,
+    toggleMonitoring,
+    notification,
+    undoLastAction,
     closeNotification,
     confirmation,
-    cancelConfirmation
+    cancelConfirmation,
   } = useClipboard();
-  const [searchText, setSearchText] = useState('');
+  const [searchText, setSearchText] = useState("");
 
-  const filteredItems = items.filter(item => 
+  const filteredItems = items.filter((item) =>
     item.content.toLowerCase().includes(searchText.toLowerCase())
   );
 
@@ -38,19 +42,21 @@ export default function ClipboardList() {
     <div className="clipboard-list">
       {/* Monitoring Toggle */}
       <div className="monitoring-toggle">
-        <button 
-          className={`toggle-button ${isEnabled ? 'enabled' : 'disabled'}`}
+        <button
+          className={`toggle-button ${isEnabled ? "enabled" : "disabled"}`}
           onClick={toggleMonitoring}
-          title={`Clipboard monitoring is ${isEnabled ? 'enabled' : 'disabled'}`}
+          title={`Clipboard monitoring is ${
+            isEnabled ? "enabled" : "disabled"
+          }`}
         >
-          <span className="toggle-icon">{isEnabled ? '🔥' : '⭕'}</span>
+          <span className="toggle-icon">{isEnabled ? "🔥" : "⭕"}</span>
           <span className="toggle-text">
-            {isEnabled ? 'Monitoring Active' : 'Monitoring Paused'}
+            {isEnabled ? "Monitoring Active" : "Monitoring Paused"}
           </span>
         </button>
       </div>
 
-      {/* Header with search and clear button */}
+      {/* Header with search and action buttons */}
       <div className="list-header">
         <input
           type="text"
@@ -59,15 +65,24 @@ export default function ClipboardList() {
           onChange={(e) => setSearchText(e.target.value)}
           className="search-input"
         />
-        {items.length > 0 && (
-          <button 
-            className="clear-all-button" 
-            onClick={clearAll}
-            title="Clear all clipboard items"
+        <div className="header-buttons">
+          {items.length > 0 && (
+            <button
+              className="clear-all-button"
+              onClick={clearAll}
+              title="Clear all clipboard items"
+            >
+              🗑️ Clear All
+            </button>
+          )}
+          <button
+            className="settings-button"
+            onClick={onOpenSettings}
+            title="Open Settings"
           >
-            🗑️ Clear All
+            ⚙️
           </button>
-        )}
+        </div>
       </div>
 
       {/* Items count */}
@@ -84,17 +99,16 @@ export default function ClipboardList() {
           <div className="empty-state">
             <div className="empty-icon">📋</div>
             <p className="empty-message">
-              {searchText 
-                ? 'No items match your search' 
-                : isEnabled 
-                  ? 'No clipboard history yet. Copy something to get started!'
-                  : 'Clipboard monitoring is paused. Enable it to start collecting clipboard history.'
-              }
+              {searchText
+                ? "No items match your search"
+                : isEnabled
+                ? "No clipboard history yet. Copy something to get started!"
+                : "Clipboard monitoring is paused. Enable it to start collecting clipboard history."}
             </p>
             {searchText && (
-              <button 
-                className="clear-search-button" 
-                onClick={() => setSearchText('')}
+              <button
+                className="clear-search-button"
+                onClick={() => setSearchText("")}
               >
                 Clear Search
               </button>
@@ -102,16 +116,16 @@ export default function ClipboardList() {
           </div>
         ) : (
           filteredItems.map((item) => (
-            <ClipboardItemCard 
-              key={item.id} 
-              item={item} 
-              onDelete={deleteItem} 
+            <ClipboardItemCard
+              key={item.id}
+              item={item}
+              onDelete={deleteItem}
               onSelect={selectItem}
             />
           ))
         )}
       </div>
-      
+
       {/* Notification */}
       {notification && (
         <Notification
@@ -122,7 +136,7 @@ export default function ClipboardList() {
           onClose={closeNotification}
         />
       )}
-      
+
       {/* Confirmation Dialog */}
       {confirmation && (
         <ConfirmDialog

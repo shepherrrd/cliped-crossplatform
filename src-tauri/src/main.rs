@@ -2,10 +2,59 @@
 
 use arboard::Clipboard;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::net::UdpSocket;
 use tokio::time::{sleep, Duration};
+use local_ip_address::local_ip;
+use rusqlite::{Connection, Result as SqlResult};
+use directories::ProjectDirs;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Device {
+    id: u32,
+    name: String,
+    icon: String,
+    ip: String,
+    status: DeviceStatus,
+    sync_mode: SyncMode,
+    last_seen: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+enum DeviceStatus {
+    Pending,    // Connection request sent/received
+    Connected,  // Accepted and connected
+    Denied,     // Connection denied
+    Offline,    // Device not responding
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+enum SyncMode {
+    TotalSync,   // Sync entire history
+    PartialSync, // Sync only new items from now on
+    Disabled,    // No syncing
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct NetworkMessage {
+    msg_type: MessageType,
+    device_id: u32,
+    device_name: String,
+    data: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+enum MessageType {
+    Discovery,        // Device announcing presence
+    ConnectionRequest, // Request to connect
+    ConnectionAccept,  // Accept connection
+    ConnectionDeny,    // Deny connection
+    ClipboardSync,    // Sync clipboard item
+    Heartbeat,        // Keep connection alive
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ClipboardItem {
@@ -20,9 +69,98 @@ type ClipboardState = Arc<Mutex<Vec<ClipboardItem>>>;
 
 #[derive(Default)]
 struct AppState {
+    devices: Arc<Mutex<HashMap<u32, Device>>>,
     clipboard_history: ClipboardState,
     last_clipboard_content: Arc<Mutex<String>>,
     enabled: Arc<Mutex<bool>>,
+    local_device: Arc<Mutex<Option<Device>>>,
+    db_path: Arc<Mutex<Option<String>>>,
+    pending_connections: Arc<Mutex<Vec<Device>>>,
+    discovered_devices: Arc<Mutex<Vec<Device>>>,
+}
+
+// Utility functions
+fn init_database() -> Result<String, String> {
+    use rusqlite::{Connection, Result as SqlResult};
+    use directories::ProjectDirs;
+    
+    if let Some(proj_dirs) = ProjectDirs::from("com", "cliped", "cliped") {
+        let data_dir = proj_dirs.data_dir();
+        std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+        
+        let db_path = data_dir.join("clipboard.db");
+        let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+        
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS clipboard_items (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                device TEXT NOT NULL,
+                content_type TEXT NOT NULL
+            )",
+            [],
+        ).map_err(|e| e.to_string())?;
+        
+        Ok(db_path.to_string_lossy().to_string())
+    } else {
+        Err("Failed to get project directories".to_string())
+    }
+}
+
+fn generate_device_info() -> Device {
+    let id = generate_id();
+    let device_name = format!("Device-{}", generate_random_suffix());
+    let ip = get_local_ip();
+    
+    Device {
+        id,
+        name: device_name,
+        icon: "laptop".to_string(),
+        ip,
+        status: DeviceStatus::Connected,
+        sync_mode: SyncMode::Disabled,
+        last_seen: get_current_timestamp(),
+    }
+}
+
+fn generate_id() -> u32 {
+    use std::hash::{Hash, Hasher};
+    use std::collections::hash_map::DefaultHasher;
+    
+    let mut hasher = DefaultHasher::new();
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .hash(&mut hasher);
+    
+    (hasher.finish() % u32::MAX as u64) as u32
+}
+
+fn get_current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn generate_random_suffix() -> String {
+    format!("{:04}", rand::random::<u16>() % 10000)
+}
+
+fn get_local_ip() -> String {
+    local_ip().map(|ip| ip.to_string()).unwrap_or_else(|_| "127.0.0.1".to_string())
+}
+
+async fn handle_network_discovery(_app_handle: AppHandle, _state: Arc<AppState>) {
+    // Placeholder for network discovery logic
+    println!("Network discovery service started");
+    
+    loop {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        // Periodic discovery logic would go here
+    }
 }
 
 // Store functionality disabled - using in-memory storage only for now
@@ -30,9 +168,111 @@ struct AppState {
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .setup(move |app| {
+        .setup(|app| {
             let app_handle = app.handle().clone();
-            
+
+            // Start UDP server for device discovery in an async task
+            let app_handle_for_udp = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Ok(udp_socket) = UdpSocket::bind("0.0.0.0:8080").await {
+                    println!("UDP server listening on port 8080 for device discovery");
+                    let mut buf = [0; 1024];
+                    
+                    loop {
+                        if let Ok((len, addr)) = udp_socket.recv_from(&mut buf).await {
+                            let message_str = String::from_utf8_lossy(&buf[..len]);
+                            println!("Received UDP message from {}: {}", addr, message_str);
+                            
+                            // Try to parse as NetworkMessage
+                            if let Ok(network_msg) = serde_json::from_str::<NetworkMessage>(&message_str) {
+                                match network_msg.msg_type {
+                                    MessageType::Discovery => {
+                                        println!("Discovery request from device: {} ({})", network_msg.device_name, network_msg.device_id);
+                                        
+                                        // Get state to both respond and potentially add discovered device
+                                        let app_state = app_handle_for_udp.state::<AppState>();
+                                        
+                                        // Extract data before any async operations
+                                        let (should_add_device, response_msg) = {
+                                            if let Ok(local_device_lock) = app_state.local_device.lock() {
+                                                if let Some(ref local_device) = *local_device_lock {
+                                                    let should_add = network_msg.device_id != local_device.id;
+                                                    let response = NetworkMessage {
+                                                        msg_type: MessageType::Discovery,
+                                                        device_id: local_device.id,
+                                                        device_name: local_device.name.clone(),
+                                                        data: None,
+                                                    };
+                                                    (should_add, Some(response))
+                                                } else {
+                                                    (false, None)
+                                                }
+                                            } else {
+                                                (false, None)
+                                            }
+                                        };
+                                        
+                                        // Add discovered device if needed
+                                        if should_add_device {
+                                            let sender_ip = addr.ip().to_string();
+                                            let discovered_device = Device {
+                                                id: network_msg.device_id,
+                                                name: network_msg.device_name.clone(),
+                                                icon: "laptop".to_string(),
+                                                ip: sender_ip,
+                                                status: DeviceStatus::Offline,
+                                                sync_mode: SyncMode::Disabled,
+                                                last_seen: get_current_timestamp(),
+                                            };
+                                            
+                                            if let Ok(mut discovered) = app_state.discovered_devices.lock() {
+                                                if !discovered.iter().any(|d| d.id == network_msg.device_id) {
+                                                    discovered.push(discovered_device);
+                                                    println!("Added discovered device: {} at {}", network_msg.device_name, addr.ip());
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Send response
+                                        if let Some(response) = response_msg {
+                                            if let Ok(response_json) = serde_json::to_string(&response) {
+                                                let _ = udp_socket.send_to(response_json.as_bytes(), addr).await;
+                                                println!("Sent discovery response to {}", addr);
+                                            }
+                                        }
+                                    },
+                                    MessageType::ConnectionRequest => {
+                                        println!("Connection request from: {} ({})", network_msg.device_name, network_msg.device_id);
+                                        // Handle connection request - add to pending connections
+                                        // TODO: Emit event to frontend to show connection request dialog
+                                    },
+                                    MessageType::ConnectionAccept => {
+                                        println!("Connection accepted by: {} ({})", network_msg.device_name, network_msg.device_id);
+                                        // Handle connection acceptance
+                                    },
+                                    MessageType::ConnectionDeny => {
+                                        println!("Connection denied by: {} ({})", network_msg.device_name, network_msg.device_id);
+                                        // Handle connection denial
+                                    },
+                                    MessageType::ClipboardSync => {
+                                        println!("Clipboard sync from: {} ({})", network_msg.device_name, network_msg.device_id);
+                                        // Handle clipboard sync
+                                    },
+                                    MessageType::Heartbeat => {
+                                        println!("Heartbeat from: {} ({})", network_msg.device_name, network_msg.device_id);
+                                        // Handle heartbeat
+                                    }
+                                }
+                            } else {
+                                println!("Failed to parse network message: {}", message_str);
+                            }
+                        }
+                    }
+                } else {
+                    eprintln!("Failed to bind UDP socket on port 8080");
+                }
+            });
+
             // Initialize state
             let state: State<AppState> = app.state();
             let _clipboard_history = Arc::clone(&state.clipboard_history);
@@ -57,6 +297,31 @@ fn main() {
                 monitor_clipboard(app_handle_for_monitor, clipboard_history, last_content, enabled).await;
             });
 
+            // Initialize database
+            match init_database() {
+                Ok(db_path) => {
+                    println!("Database initialized at: {}", db_path);
+                },
+                Err(e) => {
+                    eprintln!("Failed to initialize database: {}", e);
+                }
+            }
+
+            // Generate and set local device info
+            let local_device = generate_device_info();
+            {
+                let mut devices = state.devices.lock().unwrap();
+                devices.insert(local_device.id, local_device.clone());
+            }
+            *state.local_device.lock().unwrap() = Some(local_device);
+
+            // Start network discovery service
+            let state_arc = Arc::new(AppState::default()); // We'll initialize properly later
+            let state_for_discovery = Arc::clone(&state_arc);
+            tauri::async_runtime::spawn(async move {
+                handle_network_discovery(app_handle, state_for_discovery).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -66,7 +331,20 @@ fn main() {
             set_clipboard_content,
             toggle_monitoring,
             is_monitoring_enabled,
-            add_clipboard_item
+            add_clipboard_item,
+            add_device,
+            remove_device,
+            sync_clipboard,
+            get_local_device,
+            get_connected_devices,
+            send_connection_request,
+            accept_connection,
+            deny_connection,
+            get_pending_connections,
+            set_sync_mode,
+            discover_devices,
+            update_device_name,
+            send_connection_request_to_device
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -97,9 +375,9 @@ async fn monitor_clipboard(
                 drop(last);
 
                 let item = ClipboardItem {
-                    id: generate_id(),
+                    id: generate_id().to_string(),
                     content: text,
-                    timestamp: get_current_timestamp(),
+                    timestamp: get_current_timestamp().to_string(),
                     device: whoami::fallible::hostname().unwrap_or("Unknown".to_string()),
                     content_type: "text".to_string(),
                 };
@@ -185,22 +463,336 @@ async fn add_clipboard_item(item: ClipboardItem, state: State<'_, AppState>) -> 
     Ok(())
 }
 
-fn generate_id() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_string()
+#[tauri::command]
+fn add_device(state: State<AppState>, device: Device) {
+    let mut devices = state.devices.lock().unwrap();
+    devices.insert(device.id, device);
 }
 
-fn get_current_timestamp() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+#[tauri::command]
+fn remove_device(state: State<AppState>, device_id: u32) {
+    let mut devices = state.devices.lock().unwrap();
+    devices.remove(&device_id);
+}
+
+#[tauri::command]
+fn sync_clipboard(state: State<AppState>, item: ClipboardItem) {
+    let mut history = state.clipboard_history.lock().unwrap();
+    history.push(item);
+}
+
+#[tauri::command]
+fn get_local_device(state: State<AppState>) -> Option<Device> {
+    state.local_device.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn get_connected_devices(state: State<AppState>) -> Vec<Device> {
+    let devices = state.devices.lock().unwrap();
+    devices.values().cloned().collect()
+}
+
+#[tauri::command]
+async fn send_connection_request(state: State<'_, AppState>, ip_or_tag: String) -> Result<(), String> {
+    let local_device = state.local_device.lock().unwrap().clone();
+    if let Some(device) = local_device {
+        let message = NetworkMessage {
+            msg_type: MessageType::ConnectionRequest,
+            device_id: device.id,
+            device_name: device.name,
+            data: None,
+        };
+        
+        // Parse IP or tag
+        let target_ip = if ip_or_tag.starts_with('#') {
+            // TODO: Resolve tag to IP through device discovery
+            return Err("Tag resolution not yet implemented".to_string());
+        } else {
+            ip_or_tag
+        };
+        
+        // Send UDP message
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+            let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+            let target_addr = format!("{}:8080", target_ip);
+            if let Err(e) = socket.send_to(message_json.as_bytes(), &target_addr).await {
+                return Err(format!("Failed to send connection request: {}", e));
+            }
+            println!("Connection request sent to {}", target_addr);
+            Ok(())
+        } else {
+            Err("Failed to create UDP socket".to_string())
+        }
+    } else {
+        Err("Local device not initialized".to_string())
+    }
+}
+
+#[tauri::command]
+async fn accept_connection(state: State<'_, AppState>, device_id: u32) -> Result<(), String> {
+    // Extract data from locks before any async operations
+    let device_opt = {
+        let mut pending = state.pending_connections.lock().unwrap();
+        if let Some(pos) = pending.iter().position(|d| d.id == device_id) {
+            let mut device = pending.remove(pos);
+            device.status = DeviceStatus::Connected;
+            device.sync_mode = SyncMode::PartialSync; // Default to partial sync
+            Some(device)
+        } else {
+            None
+        }
+    };
     
-    // Format as readable time
-    let datetime = chrono::DateTime::from_timestamp(now as i64, 0)
-        .unwrap_or_default();
-    datetime.format("%H:%M:%S").to_string()
+    if let Some(device) = device_opt {
+        // Add to connected devices
+        {
+            let mut devices = state.devices.lock().unwrap();
+            devices.insert(device_id, device.clone());
+        }
+        
+        // Get local device info
+        let local_device = {
+            let local = state.local_device.lock().unwrap();
+            local.clone()
+        };
+        
+        // Send acceptance message
+        if let Some(local) = local_device {
+            let message = NetworkMessage {
+                msg_type: MessageType::ConnectionAccept,
+                device_id: local.id,
+                device_name: local.name,
+                data: None,
+            };
+            
+            if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+                let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+                let target_addr = format!("{}:8080", device.ip);
+                let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
+            }
+        }
+        
+        println!("Connection accepted for device: {}", device.name);
+        Ok(())
+    } else {
+        Err("Device not found in pending connections".to_string())
+    }
+}
+
+#[tauri::command]
+async fn deny_connection(state: State<'_, AppState>, device_id: u32) -> Result<(), String> {
+    // Extract data from locks before any async operations
+    let device_opt = {
+        let mut pending = state.pending_connections.lock().unwrap();
+        if let Some(pos) = pending.iter().position(|d| d.id == device_id) {
+            Some(pending.remove(pos))
+        } else {
+            None
+        }
+    };
+    
+    if let Some(device) = device_opt {
+        // Get local device info
+        let local_device = {
+            let local = state.local_device.lock().unwrap();
+            local.clone()
+        };
+        
+        // Send denial message
+        if let Some(local) = local_device {
+            let message = NetworkMessage {
+                msg_type: MessageType::ConnectionDeny,
+                device_id: local.id,
+                device_name: local.name,
+                data: None,
+            };
+            
+            if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+                let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+                let target_addr = format!("{}:8080", device.ip);
+                let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
+            }
+        }
+        
+        println!("Connection denied for device: {}", device.name);
+        Ok(())
+    } else {
+        Err("Device not found in pending connections".to_string())
+    }
+}
+
+#[tauri::command]
+fn get_pending_connections(state: State<AppState>) -> Vec<Device> {
+    state.pending_connections.lock().unwrap().clone()
+}
+
+#[tauri::command]
+async fn set_sync_mode(state: State<'_, AppState>, device_id: u32, sync_mode: String) -> Result<(), String> {
+    // Parse sync mode first
+    let parsed_sync_mode = match sync_mode.as_str() {
+        "total" => SyncMode::TotalSync,
+        "partial" => SyncMode::PartialSync,
+        "disabled" => SyncMode::Disabled,
+        _ => return Err("Invalid sync mode".to_string()),
+    };
+    
+    // Extract data before async operations
+    let (device_info, history, local_device) = {
+        let mut devices = state.devices.lock().unwrap();
+        if let Some(device) = devices.get_mut(&device_id) {
+            device.sync_mode = parsed_sync_mode.clone();
+            let device_info = (device.ip.clone(), device.name.clone());
+            
+            // Get history and local device if needed for total sync
+            let history = if matches!(parsed_sync_mode, SyncMode::TotalSync) {
+                state.clipboard_history.lock().unwrap().clone()
+            } else {
+                Vec::new()
+            };
+            
+            let local_device = state.local_device.lock().unwrap().clone();
+            
+            (Some(device_info), history, local_device)
+        } else {
+            (None, Vec::new(), None)
+        }
+    };
+    
+    if let Some((device_ip, device_name)) = device_info {
+        // If switching to total sync, send entire history
+        if matches!(parsed_sync_mode, SyncMode::TotalSync) && !history.is_empty() {
+            if let Some(local) = local_device {
+                for item in history {
+                    // Send each item to the device
+                    let message = NetworkMessage {
+                        msg_type: MessageType::ClipboardSync,
+                        device_id: local.id,
+                        device_name: local.name.clone(),
+                        data: Some(serde_json::to_string(&item).unwrap_or_default()),
+                    };
+                    
+                    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+                        let message_json = serde_json::to_string(&message).unwrap_or_default();
+                        let target_addr = format!("{}:8080", device_ip);
+                        let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
+                    }
+                }
+                println!("Total sync initiated for device: {}", device_name);
+            }
+        }
+        
+        println!("Sync mode updated for {}: {:?}", device_name, parsed_sync_mode);
+        Ok(())
+    } else {
+        Err("Device not found".to_string())
+    }
+}
+
+#[tauri::command]
+async fn discover_devices(state: State<'_, AppState>) -> Result<Vec<Device>, String> {
+    println!("Starting device discovery...");
+    
+    // Clear previous discoveries
+    {
+        let mut discovered = state.discovered_devices.lock().unwrap();
+        discovered.clear();
+    }
+    
+    // Get local device info to broadcast
+    let local_device = {
+        let local = state.local_device.lock().unwrap();
+        local.clone()
+    };
+    
+    if let Some(local) = local_device {
+        // Create discovery message
+        let discovery_message = NetworkMessage {
+            msg_type: MessageType::Discovery,
+            device_id: local.id,
+            device_name: local.name.clone(),
+            data: None,
+        };
+        
+        // Broadcast discovery message to the network
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+            let message_json = serde_json::to_string(&discovery_message).map_err(|e| e.to_string())?;
+            
+            // Broadcast to local network
+            let local_ip = get_local_ip();
+            let ip_parts: Vec<&str> = local_ip.split('.').collect();
+            
+            if ip_parts.len() == 4 {
+                let network_base = format!("{}.{}.{}", ip_parts[0], ip_parts[1], ip_parts[2]);
+                
+                // Try broadcasting to common IP ranges
+                for i in 1..255 {
+                    let target_ip = format!("{}.{}", network_base, i);
+                    if target_ip != local_ip {  // Don't send to ourselves
+                        let target_addr = format!("{}:8080", target_ip);
+                        let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
+                    }
+                }
+                
+                println!("Discovery broadcast sent to network {}.x", network_base);
+            }
+            
+            // Wait for responses
+            tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+            
+            // Return discovered devices
+            let discovered = state.discovered_devices.lock().unwrap();
+            let result = discovered.clone();
+            println!("Discovery scan completed. Found {} devices.", result.len());
+            Ok(result)
+        } else {
+            Err("Failed to create UDP socket for discovery".to_string())
+        }
+    } else {
+        Err("Local device not initialized".to_string())
+    }
+}
+
+#[tauri::command]
+async fn update_device_name(state: State<'_, AppState>, new_name: String) -> Result<(), String> {
+    // Update local device name
+    let mut local_device = state.local_device.lock().unwrap();
+    if let Some(ref mut device) = *local_device {
+        device.name = new_name.clone();
+        
+        // Also update in the devices map
+        let mut devices = state.devices.lock().unwrap();
+        if let Some(device_in_map) = devices.get_mut(&device.id) {
+            device_in_map.name = new_name;
+        }
+    }
+    
+    Ok(())
+}
+
+#[tauri::command]
+async fn send_connection_request_to_device(state: State<'_, AppState>, target_device: Device) -> Result<(), String> {
+    let local_device = state.local_device.lock().unwrap().clone();
+    if let Some(device) = local_device {
+        let message = NetworkMessage {
+            msg_type: MessageType::ConnectionRequest,
+            device_id: device.id,
+            device_name: device.name,
+            data: None,
+        };
+        
+        // Send UDP message to target device
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+            let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+            let target_addr = format!("{}:8080", target_device.ip);
+            if let Err(e) = socket.send_to(message_json.as_bytes(), &target_addr).await {
+                return Err(format!("Failed to send connection request: {}", e));
+            }
+            println!("Connection request sent to {} at {}", target_device.name, target_addr);
+            Ok(())
+        } else {
+            Err("Failed to create UDP socket".to_string())
+        }
+    } else {
+        Err("Local device not initialized".to_string())
+    }
 }

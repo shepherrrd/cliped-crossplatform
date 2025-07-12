@@ -174,8 +174,8 @@ fn main() {
             // Start UDP server for device discovery in an async task
             let app_handle_for_udp = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                if let Ok(udp_socket) = UdpSocket::bind("0.0.0.0:8080").await {
-                    println!("UDP server listening on port 8080 for device discovery");
+                if let Ok(udp_socket) = UdpSocket::bind("0.0.0.0:51847").await {
+                    println!("UDP server listening on port 51847 for device discovery");
                     let mut buf = [0; 1024];
                     
                     loop {
@@ -236,7 +236,7 @@ fn main() {
                                         // Send response
                                         if let Some(response) = response_msg {
                                             if let Ok(response_json) = serde_json::to_string(&response) {
-                                                // Send response back to the sender's port (not port 8080)
+                                                // Send response back to the sender's port (not port 51847)
                                                 let _ = udp_socket.send_to(response_json.as_bytes(), addr).await;
                                                 println!("Sent discovery response to {}", addr);
                                             }
@@ -262,8 +262,11 @@ fn main() {
                                         {
                                             if let Ok(mut pending) = app_state.pending_connections.lock() {
                                                 if !pending.iter().any(|d| d.id == network_msg.device_id) {
-                                                    pending.push(requesting_device);
+                                                    pending.push(requesting_device.clone());
                                                     println!("Added connection request from: {}", network_msg.device_name);
+                                                    
+                                                    // Emit event to frontend to notify of new connection request
+                                                    let _ = app_handle_for_udp.emit("connection-request-received", &requesting_device);
                                                 }
                                             }
                                         }
@@ -281,7 +284,33 @@ fn main() {
                                     },
                                     MessageType::ClipboardSync => {
                                         println!("Clipboard sync from: {} ({})", network_msg.device_name, network_msg.device_id);
-                                        // Handle clipboard sync
+                                        
+                                        // Handle incoming clipboard sync
+                                        if let Some(item_data) = network_msg.data {
+                                            if let Ok(synced_item) = serde_json::from_str::<ClipboardItem>(&item_data) {
+                                                let app_state = app_handle_for_udp.state::<AppState>();
+                                                
+                                                // Add to clipboard history without syncing back (prevent loops)
+                                                {
+                                                    let mut history = app_state.clipboard_history.lock().unwrap();
+                                                    
+                                                    // Remove duplicates
+                                                    history.retain(|existing| existing.content != synced_item.content);
+                                                    
+                                                    // Insert at beginning
+                                                    history.insert(0, synced_item.clone());
+                                                    
+                                                    // Limit to 50 items
+                                                    if history.len() > 50 {
+                                                        history.truncate(50);
+                                                    }
+                                                }
+                                                
+                                                // Emit to frontend
+                                                let _ = app_handle_for_udp.emit("clipboard-updated", &synced_item);
+                                                println!("Added synced clipboard item from {}", network_msg.device_name);
+                                            }
+                                        }
                                     },
                                     MessageType::Heartbeat => {
                                         println!("Heartbeat from: {} ({})", network_msg.device_name, network_msg.device_id);
@@ -294,7 +323,7 @@ fn main() {
                         }
                     }
                 } else {
-                    eprintln!("Failed to bind UDP socket on port 8080");
+                    eprintln!("Failed to bind UDP socket on port 51847");
                 }
             });
 
@@ -316,10 +345,15 @@ fn main() {
             let enabled = Arc::clone(&state.enabled);
             
             let app_handle_for_monitor = app_handle.clone();
+            let clipboard_history_clone = Arc::clone(&state.clipboard_history);
+            let last_content_clone = Arc::clone(&state.last_clipboard_content);
+            let enabled_clone = Arc::clone(&state.enabled);
+            let devices_clone = Arc::clone(&state.devices);
+            let local_device_clone = Arc::clone(&state.local_device);
             tauri::async_runtime::spawn(async move {
                 // Small delay to ensure everything is initialized
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                monitor_clipboard(app_handle_for_monitor, clipboard_history, last_content, enabled).await;
+                monitor_clipboard(app_handle_for_monitor, clipboard_history_clone, last_content_clone, enabled_clone, devices_clone, local_device_clone).await;
             });
 
             // Initialize database
@@ -380,6 +414,8 @@ async fn monitor_clipboard(
     clipboard_history: ClipboardState,
     last_content: Arc<Mutex<String>>,
     enabled: Arc<Mutex<bool>>,
+    devices: Arc<Mutex<HashMap<u32, Device>>>,
+    local_device: Arc<Mutex<Option<Device>>>,
 ) {
     println!("Clipboard monitoring started!");
     let mut clipboard = Clipboard::new().unwrap();
@@ -393,11 +429,18 @@ async fn monitor_clipboard(
         }
         
         if let Ok(text) = clipboard.get_text() {
-            let mut last = last_content.lock().unwrap();
-            if text != *last && !text.trim().is_empty() {
-                println!("New clipboard content detected: {}", text.chars().take(50).collect::<String>());
-                *last = text.clone();
-                drop(last);
+            let should_process = {
+                let mut last = last_content.lock().unwrap();
+                if text != *last && !text.trim().is_empty() {
+                    println!("New clipboard content detected: {}", text.chars().take(50).collect::<String>());
+                    *last = text.clone();
+                    true
+                } else {
+                    false
+                }
+            }; // Drop the lock here
+            
+            if should_process {
 
                 let item = ClipboardItem {
                     id: generate_id().to_string(),
@@ -407,24 +450,76 @@ async fn monitor_clipboard(
                     content_type: "text".to_string(),
                 };
 
-                let mut history = clipboard_history.lock().unwrap();
-                
-                // Remove duplicates
-                history.retain(|existing| existing.content != item.content);
-                
-                // Insert at beginning
-                history.insert(0, item.clone());
-                
-                // Limit to 50 items
-                if history.len() > 50 {
-                    history.truncate(50);
-                }
-                
-                println!("Clipboard history now has {} items", history.len());
+                {
+                    let mut history = clipboard_history.lock().unwrap();
+                    
+                    // Remove duplicates
+                    history.retain(|existing| existing.content != item.content);
+                    
+                    // Insert at beginning
+                    history.insert(0, item.clone());
+                    
+                    // Limit to 50 items
+                    if history.len() > 50 {
+                        history.truncate(50);
+                    }
+                    
+                    println!("Clipboard history now has {} items", history.len());
+                } // Drop the history lock here
+
+                // Sync to all connected devices
+                sync_to_connected_devices(&devices, &local_device, &item).await;
 
                 // Emit to frontend
                 let _ = app_handle.emit("clipboard-updated", &item);
                 println!("Emitted clipboard-updated event");
+            }
+        }
+    }
+}
+
+async fn sync_to_connected_devices(
+    devices: &Arc<Mutex<HashMap<u32, Device>>>, 
+    local_device: &Arc<Mutex<Option<Device>>>, 
+    item: &ClipboardItem
+) {
+    // Get connected devices and local device info
+    let (connected_devices, local) = {
+        let devices = devices.lock().unwrap();
+        let local = local_device.lock().unwrap();
+        (devices.clone(), local.clone())
+    };
+    
+    if let Some(local) = local {
+        // Only sync to devices with enabled sync modes
+        let devices_to_sync: Vec<Device> = connected_devices
+            .values()
+            .filter(|device| {
+                matches!(device.status, DeviceStatus::Connected) &&
+                !matches!(device.sync_mode, SyncMode::Disabled)
+            })
+            .cloned()
+            .collect();
+        
+        if !devices_to_sync.is_empty() {
+            println!("Syncing clipboard item to {} connected devices", devices_to_sync.len());
+            
+            for device in devices_to_sync {
+                // Create sync message
+                let message = NetworkMessage {
+                    msg_type: MessageType::ClipboardSync,
+                    device_id: local.id,
+                    device_name: local.name.clone(),
+                    data: Some(serde_json::to_string(item).unwrap_or_default()),
+                };
+                
+                // Send to device
+                if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+                    let message_json = serde_json::to_string(&message).unwrap_or_default();
+                    let target_addr = format!("{}:51847", device.ip);
+                    let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
+                    println!("Synced clipboard to device: {} at {}", device.name, device.ip);
+                }
             }
         }
     }
@@ -539,7 +634,7 @@ async fn send_connection_request(state: State<'_, AppState>, ip_or_tag: String) 
         // Send UDP message
         if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
             let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-            let target_addr = format!("{}:8080", target_ip);
+            let target_addr = format!("{}:51847", target_ip);
             if let Err(e) = socket.send_to(message_json.as_bytes(), &target_addr).await {
                 return Err(format!("Failed to send connection request: {}", e));
             }
@@ -592,7 +687,7 @@ async fn accept_connection(state: State<'_, AppState>, device_id: u32) -> Result
             
             if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
                 let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-                let target_addr = format!("{}:8080", device.ip);
+                let target_addr = format!("{}:51847", device.ip);
                 let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
             }
         }
@@ -634,7 +729,7 @@ async fn deny_connection(state: State<'_, AppState>, device_id: u32) -> Result<(
             
             if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
                 let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-                let target_addr = format!("{}:8080", device.ip);
+                let target_addr = format!("{}:51847", device.ip);
                 let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
             }
         }
@@ -698,7 +793,7 @@ async fn set_sync_mode(state: State<'_, AppState>, device_id: u32, sync_mode: St
                     
                     if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
                         let message_json = serde_json::to_string(&message).unwrap_or_default();
-                        let target_addr = format!("{}:8080", device_ip);
+                        let target_addr = format!("{}:51847", device_ip);
                         let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
                     }
                 }
@@ -757,7 +852,7 @@ async fn discover_devices(state: State<'_, AppState>) -> Result<Vec<Device>, Str
                 for i in 1..255 {
                     let target_ip = format!("{}.{}", network_base, i);
                     if target_ip != local_ip {  // Don't send to ourselves
-                        let target_addr = format!("{}:8080", target_ip);
+                        let target_addr = format!("{}:51847", target_ip);
                         let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
                     }
                 }
@@ -852,7 +947,7 @@ async fn send_connection_request_to_device(state: State<'_, AppState>, target_de
         // Send UDP message to target device
         if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
             let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-            let target_addr = format!("{}:8080", target_device.ip);
+            let target_addr = format!("{}:51847", target_device.ip);
             if let Err(e) = socket.send_to(message_json.as_bytes(), &target_addr).await {
                 return Err(format!("Failed to send connection request: {}", e));
             }

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 interface Device {
   id: number;
@@ -28,7 +29,44 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     loadDevices();
     loadPendingConnections();
     discoverDevices();
+
+    // Listen for connection request events
+    const setupEventListener = async () => {
+      try {
+        const unlisten = await listen("connection-request-received", () => {
+          console.log("New connection request received, refreshing...");
+          loadPendingConnections();
+        });
+        
+        // Cleanup listener on unmount
+        return () => unlisten();
+      } catch (error) {
+        console.error("Failed to setup event listener:", error);
+      }
+    };
+
+    setupEventListener();
   }, []);
+
+  // Filter available devices whenever connected devices or pending connections change
+  useEffect(() => {
+    if (availableDevices.length > 0) {
+      const connectedIds = devices.map((d) => d.id);
+      const pendingIds = pendingConnections.map((d) => d.id);
+      const localId = localDevice?.id;
+      
+      const filteredAvailable = availableDevices.filter(
+        (device) => 
+          !connectedIds.includes(device.id) && 
+          !pendingIds.includes(device.id) &&
+          device.id !== localId
+      );
+      
+      if (filteredAvailable.length !== availableDevices.length) {
+        setAvailableDevices(filteredAvailable);
+      }
+    }
+  }, [devices, pendingConnections, localDevice, availableDevices]);
 
   const loadDevices = async () => {
     try {
@@ -60,11 +98,19 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
     setIsDiscovering(true);
     try {
       const discovered = await invoke<Device[]>("discover_devices");
-      // Filter out devices that are already connected or pending
+      // First refresh connected devices to get latest status
+      await loadDevices();
+      
+      // Filter out devices that are already connected or pending, or is our local device
       const connectedIds = devices.map((d) => d.id);
       const pendingIds = pendingConnections.map((d) => d.id);
+      const localId = localDevice?.id;
+      
       const filteredDiscovered = discovered.filter(
-        (device) => !connectedIds.includes(device.id) && !pendingIds.includes(device.id)
+        (device) => 
+          !connectedIds.includes(device.id) && 
+          !pendingIds.includes(device.id) &&
+          device.id !== localId
       );
       setAvailableDevices(filteredDiscovered);
     } catch (error) {
@@ -110,7 +156,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       // Refresh all lists
       await loadDevices();
       await loadPendingConnections();
-      await discoverDevices();
+      // Remove the accepted device from available devices
+      setAvailableDevices((prev) => prev.filter((d) => d.id !== deviceId));
     } catch (error) {
       console.error("Failed to accept connection:", error);
       alert("Failed to accept connection");
@@ -215,9 +262,20 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
       )}
 
       {/* Pending Connection Requests */}
-      {pendingConnections.length > 0 && (
-        <div className="pending-connections">
-          <h2>Pending Connection Requests</h2>
+      <div className="pending-connections">
+        <div className="section-header">
+          <h2>Connection Requests</h2>
+          <button
+            className="refresh-button"
+            onClick={loadPendingConnections}
+            title="Check for pending connections"
+          >
+            🔄 Check
+          </button>
+        </div>
+        {pendingConnections.length === 0 ? (
+          <p className="no-devices">No pending connection requests</p>
+        ) : (
           <ul>
             {pendingConnections.map((device) => (
               <li key={device.id} className="device-item pending">
@@ -245,8 +303,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onBack }) => {
               </li>
             ))}
           </ul>
-        </div>
-      )}
+        )}
+      </div>
 
       <div className="connected-devices">
         <h2>Connected Devices</h2>

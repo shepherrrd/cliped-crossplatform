@@ -6,7 +6,15 @@ A modern, beautiful clipboard manager built with Rust (Tauri) and React. Feature
 
 ## ✨ Features
 
-- 🎨 **Stunning Frosted Glass UI** - Modern, translucent interface that adapts to your system
+- 🎨 **Stunning Froste## 📋 Naming Convention
+
+This project uses a specific naming convention:
+
+- **Repository Name**: `cliped-crossplatform`
+- **App Display Name**: "Cliped" (clean UI name)
+- **Binary Name**: `cliped` (for user convenience)
+
+This allows clear identification while providing a simple user experience.- Modern, translucent interface that adapts to your system
 - 📋 **Real-time Clipboard Monitoring** - Automatically captures clipboard changes in LIFO order
 - 🔍 **Smart Search** - Instantly find clipboard items with fuzzy search
 - ⚡ **Lightning Fast** - Built with Rust for maximum performance
@@ -29,55 +37,39 @@ A modern, beautiful clipboard manager built with Rust (Tauri) and React. Feature
   - **Windows**: Microsoft C++ Build Tools
   - **Linux**: Development packages (see below)
 
-### Installation Options
+### Installation
 
-#### Option 1: Install via Package Manager (Recommended)
+Visit the [Releases page](https://github.com/shepherrrd/cliped-crossplatform/releases) and download the appropriate installer for your operating system:
 
-##### macOS (Homebrew)
+- **🍎 macOS**: Download the `.dmg` file
+- **🪟 Windows**: Download the `.msi` installer  
+- **🐧 Linux**: Download the `.deb` package or `.AppImage`
 
-```bash
-# Add the tap for the cross-platform version
-brew tap shepherrrd/cliped-crossplatform
+#### Installation Instructions
 
-# Install Cliped Cross-Platform
-brew install cliped-crossplatform
+##### macOS
+1. Download the `.dmg` file from releases
+2. Open the DMG and drag Cliped to Applications
+3. Right-click on Cliped and select "Open" (first time only)
 
-# Run (binary is installed as 'cliped')
-cliped
-```
+##### Windows  
+1. Download the `.msi` installer from releases
+2. Run the installer and follow the setup wizard
+3. Launch Cliped from the Start menu
 
 ##### Linux (Debian/Ubuntu)
-
 ```bash
-# Download and install .deb package from cliped-crossplatform repo
-wget https://github.com/shepherrrd/cliped-crossplatform/releases/latest/download/cliped_amd64.deb
-sudo dpkg -i cliped_amd64.deb
+# Download the .deb file from releases, then:
+sudo dpkg -i cliped_*.deb
 
-# Run (binary is installed as 'cliped')
-cliped
+# Or for AppImage:
+chmod +x cliped_*.AppImage
+./cliped_*.AppImage
 ```
 
-##### Linux (Arch/Manjaro)
+### Build from Source
 
-```bash
-# Install from AUR (cliped-crossplatform package)
-yay -S cliped-crossplatform
-# or
-paru -S cliped-crossplatform
-
-# Run (binary is installed as 'cliped')
-cliped
-```
-
-#### Option 2: Download Pre-built Binaries
-
-Visit the [Releases page](https://github.com/shepherrrd/cliped-crossplatform/releases) and download the appropriate binary for your platform:
-
-- **macOS**: `Cliped.app.tar.gz`
-- **Windows**: `Cliped_x64_en-US.msi`
-- **Linux**: `cliped_amd64.AppImage` or `cliped_amd64.deb`
-
-#### Option 3: Build from Source
+If you prefer to build from source:
 
 ```bash
 # Clone the cliped-crossplatform repository
@@ -107,8 +99,8 @@ xcode-select --install
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Install Node.js (via Homebrew)
-brew install node
+# Install Node.js
+# Download from https://nodejs.org/ or use your preferred package manager
 ```
 
 #### Windows
@@ -322,121 +314,27 @@ npm run tauri build
 # - src-tauri/target/release/bundle/appimage/cliped_1.0.0_amd64.AppImage
 ```
 
-## 📦 Publishing
+## 📦 Releases
 
-### Homebrew (macOS)
+All releases are available on the [GitHub Releases page](https://github.com/shepherrrd/cliped-crossplatform/releases). 
 
-1. **Create a Homebrew tap**:
+Each release includes:
+- **🍎 macOS**: `.dmg` installer (Intel and Apple Silicon)
+- **🪟 Windows**: `.msi` installer (x64)  
+- **🐧 Linux**: `.deb` package and `.AppImage` (x64)
 
-```bash
-# Create the repository
-mkdir homebrew-cliped
-cd homebrew-cliped
+### For Developers
 
-# Create formula
-mkdir Formula
-cat > Formula/cliped-crossplatform.rb << 'EOF'
-class ClipedCrossplatform < Formula
-  desc "Beautiful cross-platform clipboard manager"
-  homepage "https://github.com/shepherrrd/cliped-crossplatform"
-  url "https://github.com/shepherrrd/cliped-crossplatform/releases/download/v1.0.0/cliped-macos.tar.gz"
-  sha256 "YOUR_SHA256_HERE"
-  version "1.0.0"
-
-  def install
-    prefix.install "Cliped.app"
-    bin.write_exec_script "#{prefix}/Cliped.app/Contents/MacOS/Cliped"
-  end
-
-  def caveats
-    <<~EOS
-      To start Cliped:
-        cliped
-
-      Or run directly:
-        open #{prefix}/Cliped.app
-    EOS
-  end
-
-  test do
-    assert_predicate prefix/"Cliped.app", :exist?
-  end
-end
-EOF
-```
-
-2. **Publish the tap**:
+To create a new release:
 
 ```bash
-git add .
-git commit -m "Add Cliped formula"
-git push origin main
-```
-
-3. **Users can then install with**:
-
-```bash
-brew tap shepherrrd/cliped-crossplatform https://github.com/shepherrrd/cliped-crossplatform.git
-brew install cliped-crossplatform
-```
-
-### AUR (Arch Linux)
-
-1. **Create PKGBUILD**:
-
-```bash
-cat > PKGBUILD << 'EOF'
-pkgname=cliped-crossplatform
-pkgver=1.0.0
-pkgrel=1
-pkgdesc="Beautiful cross-platform clipboard manager"
-arch=('x86_64')
-url="https://github.com/shepherrrd/cliped-crossplatform"
-license=('MIT')
-depends=('webkit2gtk' 'gtk3')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('YOUR_SHA256_HERE')
-
-build() {
-  cd "$pkgname-$pkgver"
-  npm install
-  npm run tauri build
-}
-
-package() {
-  cd "$pkgname-$pkgver"
-  install -Dm755 src-tauri/target/release/cliped "$pkgdir/usr/bin/cliped"
-}
-EOF
-```
-
-### APT Repository (Ubuntu/Debian)
-
-1. **Build .deb package**:
-
-```bash
+# Build for your current platform
 npm run tauri build
-```
 
-2. **Create APT repository**:
-
-```bash
-# Create repository structure
-mkdir -p apt-repo/pool/main/c/cliped-crossplatform
-cp src-tauri/target/release/bundle/deb/*.deb apt-repo/pool/main/c/cliped-crossplatform/
-
-# Generate Packages file
-cd apt-repo
-dpkg-scanpackages pool/ /dev/null | gzip -9c > Packages.gz
-
-# Create Release file
-cat > Release << EOF
-Archive: stable
-Component: main
-Origin: Cliped
-Label: Cliped
-Architecture: amd64
-EOF
+# The built files will be in:
+# - macOS: src-tauri/target/release/bundle/macos/ and src-tauri/target/release/bundle/dmg/
+# - Windows: src-tauri/target/release/bundle/msi/
+# - Linux: src-tauri/target/release/bundle/deb/ and src-tauri/target/release/bundle/appimage/
 ```
 
 ## 🔒 Security

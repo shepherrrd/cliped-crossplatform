@@ -26,3 +26,4 @@ Dockerfile.linux
 setup-distribution.sh
 build-linux-docker.sh
 release.sh
+build-and-sign.sh

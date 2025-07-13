@@ -23,7 +23,7 @@ struct Device {
     last_seen: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 enum DeviceStatus {
     Pending,    // Connection request sent/received
     Connected,  // Accepted and connected
@@ -31,7 +31,7 @@ enum DeviceStatus {
     Offline,    // Device not responding
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 enum SyncMode {
     TotalSync,   // Sync entire history
     PartialSync, // Sync only new items from now on
@@ -780,7 +780,7 @@ async fn remove_device(state: State<'_, AppState>, device_id: u32) -> Result<(),
             println!("Device removal from HashMap: {:?}", removed.is_some());
             println!("Remaining connected devices: {}", devices.len());
             for (id, dev) in devices.iter() {
-                println!("  - {} (ID: {}): {} at {}", dev.name, id, dev.status as u8, dev.ip);
+                println!("  - {} (ID: {}): {:?} at {}", dev.name, id, dev.status, dev.ip);
             }
         }
         

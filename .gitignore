@@ -29,5 +29,15 @@ release.sh
 build-and-sign.sh
 build-intel-mac-final.sh
 build-intel-mac-clean.sh
-.gitignore
 build-intel-mac.sh
+build-mac-universal.sh
+build-mac-intel.sh
+build-mac-arm64.sh
+setup-signing.sh
+*.dmg
+*.sha256
+*.sh
+MACOS_DISTRIBUTION_FIX.md
+build-mac-intel-signing-only.sh
+.gitignore
+.gitignore

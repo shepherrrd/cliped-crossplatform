@@ -604,23 +604,26 @@ async fn sync_to_connected_devices(
     local_device: &Arc<Mutex<Option<Device>>>, 
     item: &ClipboardItem
 ) {
-    // Get connected devices and local device info
-    let (connected_devices, local) = {
+    // Get connected devices and local device info - get fresh data each time
+    let (devices_to_sync, local) = {
         let devices = devices.lock().unwrap();
         let local = local_device.lock().unwrap();
-        (devices.clone(), local.clone())
-    };
-    
-    if let Some(local) = local {
-        // Only sync to devices with enabled sync modes
-        let devices_to_sync: Vec<Device> = connected_devices
+        
+        // Filter devices to sync to (get fresh data, don't clone the entire HashMap)
+        let devices_to_sync: Vec<Device> = devices
             .values()
             .filter(|device| {
                 matches!(device.status, DeviceStatus::Connected) &&
-                !matches!(device.sync_mode, SyncMode::Disabled)
+                !matches!(device.sync_mode, SyncMode::Disabled) &&
+                device.id != local.as_ref().map(|l| l.id).unwrap_or(0) // Don't sync to ourselves
             })
             .cloned()
             .collect();
+        
+        (devices_to_sync, local.clone())
+    };
+    
+    if let Some(local) = local {
         
         if !devices_to_sync.is_empty() {
             println!("Syncing clipboard item to {} connected devices", devices_to_sync.len());
@@ -642,6 +645,8 @@ async fn sync_to_connected_devices(
                     println!("Synced clipboard to device: {} at {}", device.name, device.ip);
                 }
             }
+        } else {
+            println!("No connected devices with sync enabled - skipping clipboard sync");
         }
     }
 }
@@ -771,7 +776,12 @@ async fn remove_device(state: State<'_, AppState>, device_id: u32) -> Result<(),
         // Remove from local devices list
         {
             let mut devices = state.devices.lock().unwrap();
-            devices.remove(&device_id);
+            let removed = devices.remove(&device_id);
+            println!("Device removal from HashMap: {:?}", removed.is_some());
+            println!("Remaining connected devices: {}", devices.len());
+            for (id, dev) in devices.iter() {
+                println!("  - {} (ID: {}): {} at {}", dev.name, id, dev.status as u8, dev.ip);
+            }
         }
         
         println!("Removed device: {} ({})", device.name, device_id);

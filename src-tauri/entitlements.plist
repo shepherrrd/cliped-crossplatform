@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required for hardened runtime -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <false/>
+    
+    <!-- Allow dyld environment variables for runtime compatibility -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <false/>
+    
+    <!-- Disable library validation for better compatibility -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <false/>
+    
+    <!-- Allow unsigned executable memory for WebView -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    
+    <!-- Network access for clipboard sync -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    
+    <!-- Network server for potential local API -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+    
+    <!-- Audio/Video access if needed for rich clipboard content -->
+    <key>com.apple.security.device.microphone</key>
+    <false/>
+    <key>com.apple.security.device.camera</key>
+    <false/>
+    
+    <!-- File access for clipboard file operations -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    
+    <!-- Accessibility for global hotkeys and Apple events -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    
+    <!-- Required for Tauri apps -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+</dict>
+</plist>

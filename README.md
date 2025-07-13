@@ -283,16 +283,35 @@ tokio::time::sleep(Duration::from_millis(500)).await;
 
 ## 🏗️ Building for Distribution
 
-### macOS App Bundle
+### macOS Code Signing & Notarization (Required)
 
-```bash
-# Build the app
-npm run tauri build
+To prevent "This file is damaged" errors on user machines, macOS apps must be **code signed and notarized**.
 
-# The .app bundle will be in src-tauri/target/release/bundle/macos/
-# Create a .dmg for distribution
-npm run tauri build -- --target universal-apple-darwin
-```
+#### Quick Setup
+
+1. **Configure signing credentials:**
+   ```bash
+   ./setup-signing.sh
+   ```
+
+2. **Build signed and notarized DMG:**
+   ```bash
+   # Universal binary (Intel + ARM64) - recommended
+   ./build-mac-universal.sh
+
+   # Or build for specific architecture:
+   ./build-mac-intel.sh      # Intel Macs only
+   ./build-mac-arm64.sh      # Apple Silicon only
+   ```
+
+#### Manual Setup
+
+If you prefer to configure manually, edit the build scripts with your:
+- Developer ID Application certificate
+- Apple ID and app-specific password
+- Team ID
+
+See `MACOS_DISTRIBUTION_FIX.md` for detailed instructions.
 
 ### Windows Installer
 

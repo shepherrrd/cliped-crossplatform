@@ -359,10 +359,22 @@ fn main() {
                                     MessageType::ClipboardSync => {
                                         println!("Clipboard sync from: {} ({})", network_msg.device_name, network_msg.device_id);
                                         
+                                        // Check if device is actually connected before processing clipboard sync
+                                        let app_state = app_handle_for_udp.state::<AppState>();
+                                        let devices = app_state.devices.lock().unwrap();
+                                        let is_connected = devices.contains_key(&network_msg.device_id);
+                                        
+                                        if !is_connected {
+                                            println!("Ignoring clipboard sync from unknown/unconnected device: {} ({})", 
+                                                    network_msg.device_name, network_msg.device_id);
+                                            continue;
+                                        }
+                                        
+                                        drop(devices);
+                                        
                                         // Handle incoming clipboard sync
                                         if let Some(item_data) = network_msg.data {
                                             if let Ok(synced_item) = serde_json::from_str::<ClipboardItem>(&item_data) {
-                                                let app_state = app_handle_for_udp.state::<AppState>();
                                                 
                                                 // Check if this content is different from what's currently in clipboard
                                                 let should_update = {
@@ -390,7 +402,9 @@ fn main() {
                                                         if let Err(e) = clipboard.set_text(&synced_item.content) {
                                                             eprintln!("Failed to set clipboard content: {}", e);
                                                         } else {
-                                                            println!("Set clipboard content from sync: {}", synced_item.content.chars().take(50).collect::<String>());
+                                                            println!("Set clipboard content from connected device {}: {}", 
+                                                                    network_msg.device_name, 
+                                                                    synced_item.content.chars().take(50).collect::<String>());
                                                         }
                                                     }
                                                 } else {
@@ -432,6 +446,29 @@ fn main() {
             let state: State<AppState> = app.state();
             let _clipboard_history = Arc::clone(&state.clipboard_history);
             let enabled = Arc::clone(&state.enabled);
+            
+            // Clear all cached/stale connected devices on startup
+            {
+                let mut devices = state.devices.lock().unwrap();
+                devices.clear();
+                println!("Cleared all cached connected devices on startup");
+            }
+            
+            // Clear any pending connections
+            {
+                let mut pending = state.pending_connections.lock().unwrap();
+                pending.clear();
+                println!("Cleared all pending connections on startup");
+            }
+            
+            // Clear discovered devices
+            {
+                let mut discovered = state.discovered_devices.lock().unwrap();
+                discovered.clear();
+                println!("Cleared all discovered devices on startup");
+            }
+            
+            
             
             // Set enabled to true by default
             *enabled.lock().unwrap() = true;

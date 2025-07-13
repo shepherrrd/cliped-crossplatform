@@ -359,14 +359,26 @@ fn main() {
                                     MessageType::ClipboardSync => {
                                         println!("Clipboard sync from: {} ({})", network_msg.device_name, network_msg.device_id);
                                         
-                                        // Check if device is actually connected before processing clipboard sync
+                                        // Check if we have any connected devices first
                                         let app_state = app_handle_for_udp.state::<AppState>();
                                         let devices = app_state.devices.lock().unwrap();
-                                        let is_connected = devices.contains_key(&network_msg.device_id);
                                         
-                                        if !is_connected {
-                                            println!("Ignoring clipboard sync from unknown/unconnected device: {} ({})", 
+                                        // If no connected devices, ignore all clipboard sync messages
+                                        if devices.is_empty() {
+                                            println!("No connected devices - ignoring clipboard sync from: {} ({})", 
                                                     network_msg.device_name, network_msg.device_id);
+                                            continue;
+                                        }
+                                        
+                                        // Check if device is actually connected and verify IP matches
+                                        let sender_ip = addr.ip().to_string();
+                                        let is_valid_device = devices.get(&network_msg.device_id)
+                                            .map(|device| device.ip == sender_ip)
+                                            .unwrap_or(false);
+                                        
+                                        if !is_valid_device {
+                                            println!("Ignoring clipboard sync from unknown/unconnected device or wrong IP: {} ({}) from {}", 
+                                                    network_msg.device_name, network_msg.device_id, sender_ip);
                                             continue;
                                         }
                                         
@@ -607,7 +619,6 @@ async fn monitor_clipboard(
             }; // Drop the locks here
             
             if should_process {
-
                 let item = ClipboardItem {
                     id: generate_id().to_string(),
                     content: text,
@@ -616,6 +627,7 @@ async fn monitor_clipboard(
                     content_type: "text".to_string(),
                 };
 
+                // Add to local history first
                 {
                     let mut history = clipboard_history.lock().unwrap();
                     
@@ -640,8 +652,21 @@ async fn monitor_clipboard(
                     }
                 }
 
-                // Sync to all connected devices
-                sync_to_connected_devices(&devices, &local_device, &item).await;
+                // Check if we have connected devices before syncing
+                let has_connected_devices = {
+                    let devices = devices.lock().unwrap();
+                    devices.values().any(|device| {
+                        matches!(device.status, DeviceStatus::Connected) &&
+                        !matches!(device.sync_mode, SyncMode::Disabled)
+                    })
+                };
+
+                // Only sync if we have connected devices with sync enabled
+                if has_connected_devices {
+                    sync_to_connected_devices(&devices, &local_device, &item).await;
+                } else {
+                    println!("No connected devices with sync enabled - skipping clipboard sync");
+                }
 
                 // Emit to frontend
                 let _ = app_handle.emit("clipboard-updated", &item);
@@ -675,30 +700,32 @@ async fn sync_to_connected_devices(
         (devices_to_sync, local.clone())
     };
     
+    // If no connected devices, don't send any broadcasts
+    if devices_to_sync.is_empty() {
+        println!("No connected devices with sync enabled - skipping all clipboard sync broadcasts");
+        return;
+    }
+    
     if let Some(local) = local {
+        println!("Syncing clipboard item to {} connected devices", devices_to_sync.len());
         
-        if !devices_to_sync.is_empty() {
-            println!("Syncing clipboard item to {} connected devices", devices_to_sync.len());
+        // Only send to specific connected devices, no broadcasting
+        for device in devices_to_sync {
+            // Create sync message
+            let message = NetworkMessage {
+                msg_type: MessageType::ClipboardSync,
+                device_id: local.id,
+                device_name: local.name.clone(),
+                data: Some(serde_json::to_string(item).unwrap_or_default()),
+            };
             
-            for device in devices_to_sync {
-                // Create sync message
-                let message = NetworkMessage {
-                    msg_type: MessageType::ClipboardSync,
-                    device_id: local.id,
-                    device_name: local.name.clone(),
-                    data: Some(serde_json::to_string(item).unwrap_or_default()),
-                };
-                
-                // Send to device
-                if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
-                    let message_json = serde_json::to_string(&message).unwrap_or_default();
-                    let target_addr = format!("{}:51847", device.ip);
-                    let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
-                    println!("Synced clipboard to device: {} at {}", device.name, device.ip);
-                }
+            // Send directly to specific device IP
+            if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+                let message_json = serde_json::to_string(&message).unwrap_or_default();
+                let target_addr = format!("{}:51847", device.ip);
+                let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
+                println!("Synced clipboard to connected device: {} at {}", device.name, device.ip);
             }
-        } else {
-            println!("No connected devices with sync enabled - skipping clipboard sync");
         }
     }
 }

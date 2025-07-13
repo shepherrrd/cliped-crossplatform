@@ -364,44 +364,38 @@ fn main() {
                                             if let Ok(synced_item) = serde_json::from_str::<ClipboardItem>(&item_data) {
                                                 let app_state = app_handle_for_udp.state::<AppState>();
                                                 
-                                                // Set ignore flag to prevent the monitor from detecting this as a new change
-                                                {
-                                                    let mut ignore = app_state.ignore_next_clipboard_change.lock().unwrap();
-                                                    *ignore = true;
-                                                }
-                                                
-                                                // Set the clipboard content (this will trigger the monitor, but it will be ignored)
-                                                if let Ok(mut clipboard) = Clipboard::new() {
-                                                    let _ = clipboard.set_text(&synced_item.content);
-                                                }
-                                                
-                                                // Add to clipboard history without syncing back (prevent loops)
-                                                {
-                                                    let mut history = app_state.clipboard_history.lock().unwrap();
-                                                    
-                                                    // Remove duplicates
-                                                    history.retain(|existing| existing.content != synced_item.content);
-                                                    
-                                                    // Insert at beginning
-                                                    history.insert(0, synced_item.clone());
-                                                    
-                                                    // Limit to 50 items
-                                                    if history.len() > 50 {
-                                                        history.truncate(50);
+                                                // Check if this content is different from what's currently in clipboard
+                                                let should_update = {
+                                                    if let Ok(mut clipboard) = Clipboard::new() {
+                                                        if let Ok(current_text) = clipboard.get_text() {
+                                                            current_text != synced_item.content
+                                                        } else {
+                                                            true // If we can't read clipboard, assume we should update
+                                                        }
+                                                    } else {
+                                                        true // If we can't access clipboard, assume we should update
                                                     }
-                                                }
+                                                };
                                                 
-                                                // Save synced item to database
-                                                let db_path = app_state.db_path.lock().unwrap().clone();
-                                                if let Some(db_path) = db_path {
-                                                    if let Err(e) = save_clipboard_item_to_db(&db_path, &synced_item) {
-                                                        eprintln!("Failed to save synced clipboard item to database: {}", e);
+                                                if should_update {
+                                                    // Set ignore flag to prevent sync loop - the monitor will handle adding to history
+                                                    {
+                                                        let mut ignore = app_state.ignore_next_clipboard_change.lock().unwrap();
+                                                        *ignore = true;
+                                                        println!("Setting ignore flag for synced content from {}", network_msg.device_name);
                                                     }
+                                                    
+                                                    // Set the clipboard content - the monitor will detect this and add to history
+                                                    if let Ok(mut clipboard) = Clipboard::new() {
+                                                        if let Err(e) = clipboard.set_text(&synced_item.content) {
+                                                            eprintln!("Failed to set clipboard content: {}", e);
+                                                        } else {
+                                                            println!("Set clipboard content from sync: {}", synced_item.content.chars().take(50).collect::<String>());
+                                                        }
+                                                    }
+                                                } else {
+                                                    println!("Synced content is same as current clipboard, skipping update");
                                                 }
-                                                
-                                                // Emit to frontend
-                                                let _ = app_handle_for_udp.emit("clipboard-updated", &synced_item);
-                                                println!("Added synced clipboard item from {}", network_msg.device_name);
                                             }
                                         }
                                     },

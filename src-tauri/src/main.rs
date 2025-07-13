@@ -78,6 +78,7 @@ struct AppState {
     db_path: Arc<Mutex<Option<String>>>,
     pending_connections: Arc<Mutex<Vec<Device>>>,
     discovered_devices: Arc<Mutex<Vec<Device>>>,
+    ignore_next_clipboard_change: Arc<Mutex<bool>>, // Flag to ignore clipboard changes from sync
 }
 
 // Utility functions
@@ -363,6 +364,17 @@ fn main() {
                                             if let Ok(synced_item) = serde_json::from_str::<ClipboardItem>(&item_data) {
                                                 let app_state = app_handle_for_udp.state::<AppState>();
                                                 
+                                                // Set ignore flag to prevent the monitor from detecting this as a new change
+                                                {
+                                                    let mut ignore = app_state.ignore_next_clipboard_change.lock().unwrap();
+                                                    *ignore = true;
+                                                }
+                                                
+                                                // Set the clipboard content (this will trigger the monitor, but it will be ignored)
+                                                if let Ok(mut clipboard) = Clipboard::new() {
+                                                    let _ = clipboard.set_text(&synced_item.content);
+                                                }
+                                                
                                                 // Add to clipboard history without syncing back (prevent loops)
                                                 {
                                                     let mut history = app_state.clipboard_history.lock().unwrap();
@@ -527,11 +539,12 @@ async fn monitor_clipboard(
     println!("Clipboard monitoring started!");
     let mut clipboard = Clipboard::new().unwrap();
     
-    // Get database path
-    let db_path = {
+    // Get database path and ignore flag
+    let (db_path, ignore_flag) = {
         let app_state = app_handle.state::<AppState>();
-        let x = app_state.db_path.lock().unwrap().clone();
-        x
+        let db_path = app_state.db_path.lock().unwrap().clone();
+        let ignore_flag = Arc::clone(&app_state.ignore_next_clipboard_change);
+        (db_path, ignore_flag)
     };
     
     loop {
@@ -545,14 +558,22 @@ async fn monitor_clipboard(
         if let Ok(text) = clipboard.get_text() {
             let should_process = {
                 let mut last = last_content.lock().unwrap();
-                if text != *last && !text.trim().is_empty() {
+                let mut ignore = ignore_flag.lock().unwrap();
+                
+                // Check if we should ignore this change (it's from a sync)
+                if *ignore {
+                    println!("Ignoring clipboard change from sync");
+                    *ignore = false;
+                    *last = text.clone(); // Update last content to avoid future triggers
+                    false
+                } else if text != *last && !text.trim().is_empty() {
                     println!("New clipboard content detected: {}", text.chars().take(50).collect::<String>());
                     *last = text.clone();
                     true
                 } else {
                     false
                 }
-            }; // Drop the lock here
+            }; // Drop the locks here
             
             if should_process {
 
@@ -698,7 +719,13 @@ async fn delete_clipboard_item(state: State<'_, AppState>, id: String) -> Result
 }
 
 #[tauri::command]
-async fn set_clipboard_content(content: String) -> Result<(), String> {
+async fn set_clipboard_content(content: String, state: State<'_, AppState>) -> Result<(), String> {
+    // Set ignore flag to prevent the monitor from detecting this as a new change
+    {
+        let mut ignore = state.ignore_next_clipboard_change.lock().unwrap();
+        *ignore = true;
+    }
+    
     let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(content).map_err(|e| e.to_string())?;
     Ok(())

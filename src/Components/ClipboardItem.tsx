@@ -18,6 +18,8 @@ const formatFileSize = (bytes: number): string => {
 
 export default function ClipboardItemCard({ item, onDelete, onSelect }: Props) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [filePreview, setFilePreview] = useState<string | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
 
   const maxPreviewLength = 80;
   const needsExpansion = item.content.length > maxPreviewLength;
@@ -25,9 +27,30 @@ export default function ClipboardItemCard({ item, onDelete, onSelect }: Props) {
     ? item.content.substring(0, maxPreviewLength) + "..."
     : item.content;
 
+  const loadFilePreview = async () => {
+    if (!item.file_path || isLoadingPreview || filePreview !== null) return;
+    
+    try {
+      setIsLoadingPreview(true);
+      const preview = await invoke<string | null>("get_file_preview", { 
+        filePath: item.file_path,
+        maxLength: 300 
+      });
+      setFilePreview(preview);
+    } catch (error) {
+      console.error("Failed to load file preview:", error);
+      setFilePreview(null);
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
   const handleItemClick = () => {
     if (item.content_type === "file") {
-      // For files, expand/collapse instead of copying
+      // For files, expand/collapse and load preview if expanding
+      if (!isExpanded) {
+        loadFilePreview();
+      }
       setIsExpanded(!isExpanded);
     } else {
       // For text/image items, copy to clipboard
@@ -39,15 +62,25 @@ export default function ClipboardItemCard({ item, onDelete, onSelect }: Props) {
     if (!item.file_path) return;
     
     try {
-      const fileContent = await invoke<number[]>("get_file_content", { filePath: item.file_path });
       const fileName = item.file_name || "downloaded_file";
       
-      // Convert number array to Uint8Array
-      const uint8Array = new Uint8Array(fileContent);
+      // Show save dialog to let user choose location
+      const savePath = await invoke<string | null>("show_save_dialog", { 
+        suggestedName: fileName 
+      });
       
-      const savedPath = await invoke<string>("save_received_file", { 
-        content: Array.from(uint8Array), 
-        fileName 
+      if (!savePath) {
+        console.log("Save dialog cancelled");
+        return;
+      }
+      
+      // Get file content
+      const fileContent = await invoke<number[]>("get_file_content", { filePath: item.file_path });
+      
+      // Save to chosen location
+      const savedPath = await invoke<string>("save_file_to_path", { 
+        content: fileContent, 
+        filePath: savePath
       });
       
       console.log("File saved to:", savedPath);
@@ -148,7 +181,30 @@ export default function ClipboardItemCard({ item, onDelete, onSelect }: Props) {
 
       {isExpanded && (
         <div className="item-expanded-content">
-          <div className="expanded-text">{item.content}</div>
+          <div className="expanded-text">
+            {item.content_type === "file" ? (
+              <div className="file-preview">
+                {isLoadingPreview ? (
+                  <div className="preview-loading">Loading preview...</div>
+                ) : filePreview ? (
+                  <div className="file-text-preview">
+                    <div className="preview-label">File Content Preview:</div>
+                    <pre className="preview-content">{filePreview}</pre>
+                  </div>
+                ) : (
+                  <div className="no-preview">
+                    {item.file_name ? (
+                      `📁 ${item.file_name} - No text preview available (binary file or unsupported format)`
+                    ) : (
+                      "📁 File - No text preview available"
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              item.content
+            )}
+          </div>
           <div className="expanded-actions">
             {item.content_type === "file" ? (
               <button

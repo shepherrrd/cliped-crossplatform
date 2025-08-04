@@ -12,6 +12,8 @@ use tokio::time::{sleep, Duration};
 use local_ip_address::local_ip;
 use rusqlite::Connection;
 use directories::ProjectDirs;
+use rfd::FileDialog;
+use base64::{Engine as _, engine::general_purpose};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Device {
@@ -184,7 +186,7 @@ fn load_clipboard_history_paginated(db_path: &str, offset: u32, limit: u32) -> R
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     
     let mut stmt = conn.prepare(
-        "SELECT id, content, timestamp, device, content_type, file_path, file_size, file_name FROM clipboard_items ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2"
+        "SELECT id, content, timestamp, device, content_type, file_path, file_size, file_name FROM clipboard_items WHERE content_type != 'file' ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2"
     ).map_err(|e| e.to_string())?;
     
     let clipboard_iter = stmt.query_map([limit, offset], |row| {
@@ -212,12 +214,56 @@ fn get_clipboard_history_count_from_db(db_path: &str) -> Result<u32, String> {
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     
     let count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM clipboard_items",
+        "SELECT COUNT(*) FROM clipboard_items WHERE content_type != 'file'",
         [],
         |row| row.get(0)
     ).map_err(|e| e.to_string())?;
     
     Ok(count)
+}
+
+fn get_clipboard_files_count_from_db(db_path: &str) -> Result<u32, String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    
+    let count: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM clipboard_items WHERE content_type = 'file'",
+        [],
+        |row| row.get(0)
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(count)
+}
+
+fn get_clipboard_files_paginated_from_db(db_path: &str, offset: u32, limit: u32) -> Result<Vec<ClipboardItem>, String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    
+    let mut stmt = conn.prepare(
+        "SELECT id, content, timestamp, device, content_type, file_path, file_size, file_name 
+         FROM clipboard_items 
+         WHERE content_type = 'file'
+         ORDER BY timestamp DESC 
+         LIMIT ? OFFSET ?"
+    ).map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map([limit, offset], |row| {
+        Ok(ClipboardItem {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            timestamp: row.get(2)?,
+            device: row.get(3)?,
+            content_type: row.get(4)?,
+            file_path: row.get(5)?,
+            file_size: row.get(6)?,
+            file_name: row.get(7)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut items = Vec::new();
+    for row in rows {
+        items.push(row.map_err(|e| e.to_string())?);
+    }
+    
+    Ok(items)
 }
 
 fn save_clipboard_item_to_db(db_path: &str, item: &ClipboardItem) -> Result<(), String> {
@@ -258,6 +304,54 @@ fn delete_clipboard_item_from_db(db_path: &str, item_id: &str) -> Result<(), Str
     Ok(())
 }
 
+fn store_file_content(file_content: &[u8], file_name: &str, file_id: &str) -> Result<String, String> {
+    use std::fs;
+    use std::path::Path;
+    
+    // Get app data directory for storing files
+    if let Some(proj_dirs) = ProjectDirs::from("com", "cliped", "cliped") {
+        let data_dir = proj_dirs.data_dir();
+        let files_dir = data_dir.join("files");
+        
+        // Create files directory if it doesn't exist
+        fs::create_dir_all(&files_dir).map_err(|e| format!("Failed to create files directory: {}", e))?;
+        
+        // Extract file extension to preserve it
+        let extension = Path::new(file_name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("");
+        
+        // Create stored filename: file_id + original extension
+        let stored_filename = if extension.is_empty() {
+            file_id.to_string()
+        } else {
+            format!("{}.{}", file_id, extension)
+        };
+        
+        let stored_path = files_dir.join(&stored_filename);
+        
+        // Write file content to storage
+        fs::write(&stored_path, file_content)
+            .map_err(|e| format!("Failed to write file to storage: {}", e))?;
+        
+        println!("File stored successfully: {} -> {}", file_name, stored_path.display());
+        Ok(stored_path.to_string_lossy().to_string())
+    } else {
+        Err("Failed to get project directories for file storage".to_string())
+    }
+}
+
+fn get_files_storage_directory() -> Result<String, String> {
+    if let Some(proj_dirs) = ProjectDirs::from("com", "cliped", "cliped") {
+        let data_dir = proj_dirs.data_dir();
+        let files_dir = data_dir.join("files");
+        Ok(files_dir.to_string_lossy().to_string())
+    } else {
+        Err("Failed to get project directories".to_string())
+    }
+}
+
 async fn handle_network_discovery(_app_handle: AppHandle, _state: Arc<AppState>) {
     // Placeholder for network discovery logic
     println!("Network discovery service started");
@@ -273,7 +367,6 @@ async fn handle_network_discovery(_app_handle: AppHandle, _state: Arc<AppState>)
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -504,8 +597,76 @@ pub fn run() {
                                         // Handle heartbeat
                                     },
                                     MessageType::FileTransfer => {
-                                        println!("File transfer request from: {} ({})", network_msg.device_name, network_msg.device_id);
-                                        // TODO: Handle file transfer request
+                                        println!("File transfer from: {} ({})", network_msg.device_name, network_msg.device_id);
+                                        
+                                        // Check if device is connected
+                                        let app_state = app_handle_for_udp.state::<AppState>();
+                                        let devices = app_state.devices.lock().unwrap();
+                                        let sender_ip = addr.ip().to_string();
+                                        let is_valid_device = devices.get(&network_msg.device_id)
+                                            .map(|device| device.ip == sender_ip)
+                                            .unwrap_or(false);
+                                        
+                                        if !is_valid_device {
+                                            println!("Ignoring file transfer from unknown/unconnected device: {} ({})", 
+                                                    network_msg.device_name, network_msg.device_id);
+                                            continue;
+                                        }
+                                        
+                                        drop(devices);
+                                        
+                                        // Handle incoming file transfer
+                                        if let Some(file_data) = network_msg.data {
+                                            if let Ok(parsed_data) = serde_json::from_str::<serde_json::Value>(&file_data) {
+                                                if let (Some(item_data), Some(file_content_b64)) = (
+                                                    parsed_data.get("item"),
+                                                    parsed_data.get("file_content").and_then(|v| v.as_str())
+                                                ) {
+                                                    // Decode the file content
+                                                    if let Ok(file_content) = general_purpose::STANDARD.decode(file_content_b64) {
+                                                        if let Ok(received_item) = serde_json::from_value::<ClipboardItem>(item_data.clone()) {
+                                                            
+                                                            // Store the received file
+                                                            let file_name = received_item.file_name.as_ref()
+                                                                .unwrap_or(&"received_file".to_string()).clone();
+                                                            
+                                                            match store_file_content(&file_content, &file_name, &received_item.id) {
+                                                                Ok(stored_path) => {
+                                                                    // Create new item with our local storage path
+                                                                    let local_item = ClipboardItem {
+                                                                        id: received_item.id,
+                                                                        content: received_item.content,
+                                                                        timestamp: received_item.timestamp,
+                                                                        device: received_item.device,
+                                                                        content_type: received_item.content_type,
+                                                                        file_path: Some(stored_path),
+                                                                        file_size: received_item.file_size,
+                                                                        file_name: received_item.file_name,
+                                                                    };
+                                                                    
+                                                                    // Files are not added to in-memory history - only stored in database
+                                                                    
+                                                                    // Save to database
+                                                                    let db_path = app_state.db_path.lock().unwrap().clone();
+                                                                    if let Some(db_path) = db_path {
+                                                                        let _ = save_clipboard_item_to_db(&db_path, &local_item);
+                                                                    }
+                                                                    
+                                                                    // Emit to frontend
+                                                                    let _ = app_handle_for_udp.emit("clipboard-updated", &local_item);
+                                                                    
+                                                                    println!("Received and stored file: {} ({} bytes) from {}", 
+                                                                            file_name, file_content.len(), network_msg.device_name);
+                                                                },
+                                                                Err(e) => {
+                                                                    eprintln!("Failed to store received file: {}", e);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     },
                                     MessageType::FileTransferChunk => {
                                         println!("File transfer chunk from: {} ({})", network_msg.device_name, network_msg.device_id);
@@ -621,6 +782,8 @@ pub fn run() {
             get_clipboard_history,
             get_clipboard_history_paginated,
             get_clipboard_history_count,
+            get_clipboard_files_count,
+            get_clipboard_files_paginated,
             clear_clipboard_history,
             delete_clipboard_item,
             set_clipboard_content,
@@ -642,7 +805,12 @@ pub fn run() {
             send_connection_request_to_device,
             add_file_to_clipboard,
             get_file_content,
-            save_received_file
+            save_received_file,
+            save_file_to_path,
+            show_open_dialog,
+            show_save_dialog,
+            get_file_preview,
+            get_files_storage_directory_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -839,6 +1007,67 @@ async fn sync_to_connected_devices(
     }
 }
 
+async fn sync_file_to_connected_devices(
+    devices: &Arc<Mutex<HashMap<u32, Device>>>, 
+    local_device: &Arc<Mutex<Option<Device>>>, 
+    item: &ClipboardItem,
+    file_content: &[u8]
+) {
+    // Get connected devices and local device info
+    let (devices_to_sync, local) = {
+        let devices = devices.lock().unwrap();
+        let local = local_device.lock().unwrap();
+        
+        // Filter devices to sync to
+        let devices_to_sync: Vec<Device> = devices
+            .values()
+            .filter(|device| {
+                matches!(device.status, DeviceStatus::Connected) &&
+                !matches!(device.sync_mode, SyncMode::Disabled) &&
+                device.id != local.as_ref().map(|l| l.id).unwrap_or(0)
+            })
+            .cloned()
+            .collect();
+        
+        (devices_to_sync, local.clone())
+    };
+    
+    if devices_to_sync.is_empty() {
+        println!("No connected devices with sync enabled - skipping file sync");
+        return;
+    }
+    
+    if let Some(local) = local {
+        println!("Syncing file to {} connected devices: {} ({} bytes)", 
+                devices_to_sync.len(), 
+                item.file_name.as_ref().unwrap_or(&"unknown".to_string()),
+                file_content.len());
+        
+        for device in devices_to_sync {
+            // Create file transfer message with complete file content
+            let file_data = serde_json::json!({
+                "item": item,
+                "file_content": general_purpose::STANDARD.encode(file_content)
+            });
+            
+            let message = NetworkMessage {
+                msg_type: MessageType::FileTransfer,
+                device_id: local.id,
+                device_name: local.name.clone(),
+                data: Some(file_data.to_string()),
+            };
+            
+            // Send directly to specific device IP
+            if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+                let message_json = serde_json::to_string(&message).unwrap_or_default();
+                let target_addr = format!("{}:51847", device.ip);
+                let _ = socket.send_to(message_json.as_bytes(), &target_addr).await;
+                println!("Synced file to connected device: {} at {}", device.name, device.ip);
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn get_clipboard_history(state: State<'_, AppState>) -> Result<Vec<ClipboardItem>, String> {
     let history = state.clipboard_history.lock().unwrap();
@@ -860,6 +1089,26 @@ async fn get_clipboard_history_count(state: State<'_, AppState>) -> Result<u32, 
     let db_path = state.db_path.lock().unwrap().clone();
     if let Some(db_path) = db_path {
         get_clipboard_history_count_from_db(&db_path)
+    } else {
+        Err("Database not initialized".to_string())
+    }
+}
+
+#[tauri::command]
+async fn get_clipboard_files_count(state: State<'_, AppState>) -> Result<u32, String> {
+    let db_path = state.db_path.lock().unwrap().clone();
+    if let Some(db_path) = db_path {
+        get_clipboard_files_count_from_db(&db_path)
+    } else {
+        Err("Database not initialized".to_string())
+    }
+}
+
+#[tauri::command]
+async fn get_clipboard_files_paginated(state: State<'_, AppState>, offset: u32, limit: u32) -> Result<Vec<ClipboardItem>, String> {
+    let db_path = state.db_path.lock().unwrap().clone();
+    if let Some(db_path) = db_path {
+        get_clipboard_files_paginated_from_db(&db_path, offset, limit)
     } else {
         Err("Database not initialized".to_string())
     }
@@ -1395,31 +1644,47 @@ async fn add_file_to_clipboard(state: State<'_, AppState>, file_path: String) ->
         .unwrap_or("unknown")
         .to_string();
     
+    // Check file size limit (10MB)
+    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+    if metadata.len() > MAX_FILE_SIZE {
+        return Err(format!("File '{}' is too large ({}MB). Maximum size is 10MB.", 
+                          file_name, metadata.len() / 1024 / 1024));
+    }
+    
+    // Allow any file format - no restrictions on file type
+    
+    // Read the full file content into memory
+    println!("Reading file content: {} ({} bytes)", file_name, metadata.len());
+    let file_content = fs::read(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+    println!("Successfully read {} bytes from file", file_content.len());
+    
+    // Create a unique file ID and store the file in our files directory
+    let file_id = generate_id().to_string();
+    let stored_file_path = store_file_content(&file_content, &file_name, &file_id)?;
+    println!("Stored file at: {}", stored_file_path);
+    
     let item = ClipboardItem {
-        id: generate_id().to_string(),
-        content: format!("File: {}", file_name),
+        id: file_id.clone(),
+        content: format!("File: {} ({} bytes)", file_name, file_content.len()),
         timestamp: get_current_timestamp().to_string(),
         device: whoami::fallible::hostname().unwrap_or("Unknown".to_string()),
         content_type: "file".to_string(),
-        file_path: Some(file_path),
+        file_path: Some(stored_file_path), // Now points to our stored copy
         file_size: Some(metadata.len()),
         file_name: Some(file_name),
     };
     
-    // Add to history
-    {
-        let mut history = state.clipboard_history.lock().unwrap();
-        history.insert(0, item.clone());
-        if history.len() > 50 {
-            history.truncate(50);
-        }
-    }
+    // Files are not added to in-memory history - they're only stored in database
+    // and retrieved via files-specific queries
     
     // Save to database
     let db_path = state.db_path.lock().unwrap().clone();
     if let Some(db_path) = db_path {
         save_clipboard_item_to_db(&db_path, &item)?;
     }
+    
+    // Sync to connected devices with full file content
+    sync_file_to_connected_devices(&state.devices, &state.local_device, &item, &file_content).await;
     
     Ok(())
 }
@@ -1466,4 +1731,121 @@ async fn save_received_file(content: Vec<u8>, file_name: String) -> Result<Strin
         .map_err(|e| format!("Failed to save file: {}", e))?;
     
     Ok(final_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn save_file_to_path(content: Vec<u8>, file_path: String) -> Result<String, String> {
+    use std::fs;
+    
+    fs::write(&file_path, content)
+        .map_err(|e| format!("Failed to save file: {}", e))?;
+    
+    Ok(file_path)
+}
+
+#[tauri::command]
+async fn show_open_dialog(title: String, multiple: bool) -> Result<Option<String>, String> {
+    println!("Opening file dialog with title: {}", title);
+    
+    let dialog = FileDialog::new()
+        .set_title(&title);
+    
+    if multiple {
+        // For now, just return the first file if multiple is true
+        let files = dialog.pick_files();
+        if let Some(files) = files {
+            if let Some(first_file) = files.first() {
+                let path = first_file.to_string_lossy().to_string();
+                println!("Selected file: {}", path);
+                return Ok(Some(path));
+            }
+        }
+    } else {
+        let file = dialog.pick_file();
+        if let Some(file) = file {
+            let path = file.to_string_lossy().to_string();
+            println!("Selected file: {}", path);
+            return Ok(Some(path));
+        }
+    }
+    
+    println!("No file selected");
+    Ok(None)
+}
+
+#[tauri::command]
+async fn show_save_dialog(suggested_name: String) -> Result<Option<String>, String> {
+    println!("Opening save dialog with suggested name: {}", suggested_name);
+    
+    let dialog = FileDialog::new()
+        .set_title("Save file as...")
+        .set_file_name(&suggested_name);
+    
+    let file = dialog.save_file();
+    if let Some(file) = file {
+        let path = file.to_string_lossy().to_string();
+        println!("Save location selected: {}", path);
+        return Ok(Some(path));
+    }
+    
+    println!("Save dialog cancelled");
+    Ok(None)
+}
+
+#[tauri::command]
+async fn get_file_preview(file_path: String, max_length: Option<usize>) -> Result<Option<String>, String> {
+    use std::fs;
+    use std::path::Path;
+    
+    let path = Path::new(&file_path);
+    if !path.exists() {
+        return Err("File does not exist".to_string());
+    }
+    
+    // Get file extension to determine if it's likely a text file
+    let extension = path.extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    
+    // List of text-based file extensions
+    let text_extensions = [
+        "txt", "md", "json", "xml", "html", "htm", "css", "js", "ts", "jsx", "tsx",
+        "py", "rs", "go", "java", "c", "cpp", "h", "hpp", "cs", "php", "rb", "pl",
+        "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd", "sql", "log", "cfg", "conf",
+        "ini", "toml", "yaml", "yml", "csv", "tsv", "rtf", "tex", "dockerfile", "gitignore",
+        "readme", "license", "changelog", "makefile", "cmake", "vcxproj", "csproj",
+        "swift", "kt", "scala", "clj", "hs", "elm", "dart", "lua", "r", "jl", "m", "mm"
+    ];
+    
+    if !text_extensions.contains(&extension.as_str()) {
+        return Ok(None); // Not a text file, no preview available
+    }
+    
+    // Try to read the file as text
+    match fs::read_to_string(&file_path) {
+        Ok(content) => {
+            let max_len = max_length.unwrap_or(200); // Default to 200 characters
+            if content.len() <= max_len {
+                Ok(Some(content))
+            } else {
+                // Truncate at word boundary if possible
+                let truncated = &content[..max_len];
+                if let Some(last_space) = truncated.rfind(' ') {
+                    Ok(Some(format!("{}...", &content[..last_space])))
+                } else {
+                    Ok(Some(format!("{}...", truncated)))
+                }
+            }
+        },
+        Err(_) => {
+            // File exists but couldn't be read as text (binary file, encoding issues, etc.)
+            Ok(None)
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_files_storage_directory_path() -> Result<String, String> {
+    get_files_storage_directory()
 }

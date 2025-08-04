@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import ClipboardItemCard from "./ClipboardItem";
 import Notification from "./Notification";
 import ConfirmDialog from "./ConfirmDialog";
 import FileTransfer from "./FileTransfer";
 import { useClipboard } from "../Hooks/useClipboard";
+import { ClipboardItem } from "../types";
 
 interface ClipboardListProps {
   onOpenSettings: () => void;
@@ -31,30 +33,104 @@ export default function ClipboardList({ onOpenSettings }: ClipboardListProps) {
     canGoPrevious,
     totalCount,
     currentPage,
-    totalPages,
     itemsPerPage,
   } = useClipboard();
   const [searchText, setSearchText] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [showFileTransfer, setShowFileTransfer] = useState(false);
+  
+  // Separate state for files view
+  const [filesItems, setFilesItems] = useState<ClipboardItem[]>([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesCurrentPage, setFilesCurrentPage] = useState(0);
+  const [filesTotalCount, setFilesTotalCount] = useState(0);
 
-  const filteredItems = items.filter((item) => {
+  // Load files when switching to files view
+  const loadFilesPage = async (page: number) => {
+    if (filesLoading) return;
+    
+    try {
+      setFilesLoading(true);
+      const [filesHistory, filesCount] = await Promise.all([
+        invoke<ClipboardItem[]>("get_clipboard_files_paginated", { 
+          offset: page * itemsPerPage, 
+          limit: itemsPerPage 
+        }),
+        invoke<number>("get_clipboard_files_count"),
+      ]);
+      
+      setFilesItems(filesHistory);
+      setFilesCurrentPage(page);
+      setFilesTotalCount(filesCount);
+    } catch (error) {
+      console.error("Failed to load files page:", error);
+    } finally {
+      setFilesLoading(false);
+    }
+  };
+
+  // Load files when viewMode changes to files
+  useEffect(() => {
+    if (viewMode === "files") {
+      loadFilesPage(0);
+    }
+  }, [viewMode]);
+
+  // Get the appropriate items and pagination info based on view mode
+  const currentItems = viewMode === "files" ? filesItems : items;
+  const currentLoading = viewMode === "files" ? filesLoading : loading;
+  const currentPage_display = viewMode === "files" ? filesCurrentPage : currentPage;
+  const currentTotalCount = viewMode === "files" ? filesTotalCount : totalCount;
+  
+  const filteredItems = currentItems.filter((item) => {
     const matchesSearch = item.content.toLowerCase().includes(searchText.toLowerCase()) ||
                          (item.file_name && item.file_name.toLowerCase().includes(searchText.toLowerCase()));
-    
-    if (viewMode === "files") {
-      return matchesSearch && item.content_type === "file";
-    }
     
     return matchesSearch;
   });
 
   const handleFileAdded = () => {
     setShowFileTransfer(false);
-    // The useClipboard hook will automatically refresh and show the new file
+    // Reload the current view
+    if (viewMode === "files") {
+      loadFilesPage(filesCurrentPage);
+    }
+    // The useClipboard hook will automatically refresh for "all" view
   };
 
-  if (loading) {
+  // Navigation functions that work for both view modes
+  const handleNextPage = () => {
+    if (viewMode === "files") {
+      const maxPage = Math.ceil(filesTotalCount / itemsPerPage) - 1;
+      if (filesCurrentPage < maxPage) {
+        loadFilesPage(filesCurrentPage + 1);
+      }
+    } else {
+      nextPage();
+    }
+  };
+
+  const handlePreviousPage = () => {
+    if (viewMode === "files") {
+      if (filesCurrentPage > 0) {
+        loadFilesPage(filesCurrentPage - 1);
+      }
+    } else {
+      previousPage();
+    }
+  };
+
+  const canGoNextPage = viewMode === "files" 
+    ? filesCurrentPage < Math.ceil(filesTotalCount / itemsPerPage) - 1
+    : canGoNext;
+    
+  const canGoPreviousPage = viewMode === "files" 
+    ? filesCurrentPage > 0 
+    : canGoPrevious;
+    
+  const totalPages_display = Math.ceil(currentTotalCount / itemsPerPage);
+
+  if (loading && viewMode === "all") {
     return (
       <div className="loading-container">
         <div className="loading-spinner"></div>
@@ -134,34 +210,34 @@ export default function ClipboardList({ onOpenSettings }: ClipboardListProps) {
       </div>
 
       {/* Items count and pagination info */}
-      {items.length > 0 && (
+      {currentItems.length > 0 && (
         <div className="items-count">
           {searchText ? (
-            `${filteredItems.length} of ${totalCount > 0 ? totalCount : items.length} items (filtered)`
+            `${filteredItems.length} of ${currentTotalCount > 0 ? currentTotalCount : currentItems.length} ${viewMode === "files" ? "files" : "items"} (filtered)`
           ) : (
-            `Showing ${currentPage * itemsPerPage + 1}-${Math.min((currentPage + 1) * itemsPerPage, totalCount)} of ${totalCount} items`
+            `Showing ${currentPage_display * itemsPerPage + 1}-${Math.min((currentPage_display + 1) * itemsPerPage, currentTotalCount)} of ${currentTotalCount} ${viewMode === "files" ? "files" : "items"}`
           )}
         </div>
       )}
 
       {/* Top Pagination Controls */}
-      {!searchText && totalPages > 1 && (
+      {!searchText && totalPages_display > 1 && (
         <div className="pagination-container top">
           <button
             className="pagination-button previous"
-            onClick={previousPage}
-            disabled={!canGoPrevious || loading}
+            onClick={handlePreviousPage}
+            disabled={!canGoPreviousPage || currentLoading}
             title="Previous page"
           >
             ← Previous
           </button>
           <div className="pagination-info">
-            Page {currentPage + 1} of {totalPages}
+            Page {currentPage_display + 1} of {totalPages_display}
           </div>
           <button
             className="pagination-button next"
-            onClick={nextPage}
-            disabled={!canGoNext || loading}
+            onClick={handleNextPage}
+            disabled={!canGoNextPage || currentLoading}
             title="Next page"
           >
             Next →
@@ -206,23 +282,23 @@ export default function ClipboardList({ onOpenSettings }: ClipboardListProps) {
               />
             ))}
             {/* Bottom Pagination Controls */}
-            {!searchText && totalPages > 1 && (
+            {!searchText && totalPages_display > 1 && (
               <div className="pagination-container bottom">
                 <button
                   className="pagination-button previous"
-                  onClick={previousPage}
-                  disabled={!canGoPrevious || loading}
+                  onClick={handlePreviousPage}
+                  disabled={!canGoPreviousPage || currentLoading}
                   title="Previous page"
                 >
                   ← Previous
                 </button>
                 <div className="pagination-info">
-                  Page {currentPage + 1} of {totalPages}
+                  Page {currentPage_display + 1} of {totalPages_display}
                 </div>
                 <button
                   className="pagination-button next"
-                  onClick={nextPage}
-                  disabled={!canGoNext || loading}
+                  onClick={handleNextPage}
+                  disabled={!canGoNextPage || currentLoading}
                   title="Next page"
                 >
                   Next →

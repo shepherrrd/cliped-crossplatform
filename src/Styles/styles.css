@@ -121,6 +121,12 @@
   opacity: 0.7;
 }
 
+.file-transfer-sync {
+  font-size: 12px !important;
+  color: rgba(0, 200, 100, 0.8) !important;
+  opacity: 1 !important;
+}
+
 .file-transfer-status {
   display: flex;
   flex-direction: column;
@@ -387,21 +393,20 @@
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
     sans-serif;
-  background: transparent;
+  background: #1a1a1c;
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
+  margin: 0;
+  padding: 0;
 }
 
 /* Main app container */
 .app-container {
   width: 100vw;
   height: 100vh;
-  background: rgba(20, 20, 22, 0.75);
-  backdrop-filter: blur(60px) saturate(180%);
-  -webkit-backdrop-filter: blur(60px) saturate(180%);
+  background: linear-gradient(135deg, #1a1a1c 0%, #2a2a2e 100%);
   border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 20px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1567,4 +1572,56 @@ body {
   background: rgba(239, 68, 68, 1);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+/* File Preview Styles */
+.file-preview {
+  width: 100%;
+}
+
+.preview-loading {
+  color: rgba(255, 255, 255, 0.6);
+  font-style: italic;
+  padding: 16px;
+  text-align: center;
+}
+
+.file-text-preview {
+  width: 100%;
+}
+
+.preview-label {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.preview-content {
+  background: rgba(30, 30, 35, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 12px;
+  color: rgba(255, 255, 255, 0.9);
+  font-family: 'SF Mono', 'Monaco', 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  backdrop-filter: blur(10px);
+}
+
+.no-preview {
+  color: rgba(255, 255, 255, 0.6);
+  font-style: italic;
+  padding: 16px;
+  text-align: center;
+  background: rgba(40, 40, 45, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
 }

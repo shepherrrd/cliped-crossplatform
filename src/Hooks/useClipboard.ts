@@ -29,6 +29,9 @@ export function useClipboard() {
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(
     null
   );
+  const [currentPage, setCurrentPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const itemsPerPage = 50;
 
   // Load initial clipboard history and monitoring status
   useEffect(() => {
@@ -36,14 +39,17 @@ export function useClipboard() {
     const loadHistory = async () => {
       try {
         console.log("useClipboard: Calling backend commands...");
-        const [history, enabled] = await Promise.all([
-          invoke<ClipboardItem[]>("get_clipboard_history"),
+        const [history, enabled, count] = await Promise.all([
+          invoke<ClipboardItem[]>("get_clipboard_history_paginated", { offset: 0, limit: itemsPerPage }),
           invoke<boolean>("is_monitoring_enabled"),
+          invoke<number>("get_clipboard_history_count"),
         ]);
         console.log("useClipboard: Received history:", history);
         console.log("useClipboard: Monitoring enabled:", enabled);
+        console.log("useClipboard: Total count:", count);
         setItems(history);
         setIsEnabled(enabled);
+        setTotalCount(count);
       } catch (error) {
         console.error("Failed to load clipboard history:", error);
       } finally {
@@ -54,33 +60,45 @@ export function useClipboard() {
     loadHistory();
   }, []);
 
-  // Auto-refresh clipboard history every 20ms
+  // Auto-refresh clipboard history every 500ms (reduced frequency for better performance with pagination)
   useEffect(() => {
     console.log("useClipboard: Setting up auto-refresh polling...");
 
     const pollInterval = setInterval(async () => {
       try {
-        const history = await invoke<ClipboardItem[]>("get_clipboard_history");
+        // Only poll when we're on the first page to avoid disrupting navigation
+        if (currentPage === 0) {
+          const [history, count] = await Promise.all([
+            invoke<ClipboardItem[]>("get_clipboard_history_paginated", { offset: 0, limit: itemsPerPage }),
+            invoke<number>("get_clipboard_history_count"),
+          ]);
 
-        setItems((prev) => {
-          // Only update if the history has actually changed
-          if (
-            prev.length !== history.length ||
-            (history.length > 0 &&
-              prev.length > 0 &&
-              prev[0]?.id !== history[0]?.id)
-          ) {
-            console.log(
-              `useClipboard: History updated - ${prev.length} -> ${history.length} items`
-            );
-            return history;
-          }
-          return prev;
-        });
+          setItems((prev) => {
+            // Only update if the history has actually changed
+            if (
+              prev.length !== history.length ||
+              (history.length > 0 &&
+                prev.length > 0 &&
+                prev[0]?.id !== history[0]?.id)
+            ) {
+              console.log(
+                `useClipboard: History updated - ${prev.length} -> ${history.length} items`
+              );
+              return history;
+            }
+            return prev;
+          });
+          
+          setTotalCount(count);
+        } else {
+          // Still update the total count for other pages
+          const count = await invoke<number>("get_clipboard_history_count");
+          setTotalCount(count);
+        }
       } catch (error) {
         console.error("Failed to poll clipboard history:", error);
       }
-    }, 20); // Poll every 20ms for instant updates
+    }, 500); // Poll every 500ms for better performance
 
     console.log("useClipboard: Auto-refresh polling started");
 
@@ -88,7 +106,7 @@ export function useClipboard() {
       console.log("useClipboard: Cleaning up auto-refresh polling...");
       clearInterval(pollInterval);
     };
-  }, []);
+  }, [currentPage]);
 
   const showNotification = (
     message: string,
@@ -208,6 +226,42 @@ export function useClipboard() {
     setConfirmation(null);
   };
 
+  const loadPage = async (page: number) => {
+    if (loading) return;
+    
+    try {
+      setLoading(true);
+      const history = await invoke<ClipboardItem[]>("get_clipboard_history_paginated", { 
+        offset: page * itemsPerPage, 
+        limit: itemsPerPage 
+      });
+      
+      setItems(history);
+      setCurrentPage(page);
+    } catch (error) {
+      console.error("Failed to load page:", error);
+      showNotification("Failed to load page", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const nextPage = () => {
+    if (currentPage < Math.ceil(totalCount / itemsPerPage) - 1) {
+      loadPage(currentPage + 1);
+    }
+  };
+
+  const previousPage = () => {
+    if (currentPage > 0) {
+      loadPage(currentPage - 1);
+    }
+  };
+
+  const canGoNext = currentPage < Math.ceil(totalCount / itemsPerPage) - 1;
+  const canGoPrevious = currentPage > 0;
+  const totalPages = Math.ceil(totalCount / itemsPerPage);
+
   return {
     items,
     loading,
@@ -221,5 +275,13 @@ export function useClipboard() {
     closeNotification,
     confirmation,
     cancelConfirmation,
+    nextPage,
+    previousPage,
+    canGoNext,
+    canGoPrevious,
+    totalCount,
+    currentPage,
+    totalPages,
+    itemsPerPage,
   };
 }

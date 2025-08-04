@@ -3,7 +3,10 @@ export interface ClipboardItem {
   content: string;
   timestamp: string;
   device: string;
-  content_type: "text" | "image";
+  content_type: "text" | "image" | "file";
+  file_path?: string;
+  file_size?: number;
+  file_name?: string;
 }
 
 export interface ClipboardStore {

@@ -1,10 +1,19 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { ClipboardItem } from "../types";
 
 type Props = {
   item: ClipboardItem;
   onDelete: (id: string) => void;
   onSelect: (content: string) => void;
+};
+
+const formatFileSize = (bytes: number): string => {
+  if (bytes === 0) return "0 Bytes";
+  const k = 1024;
+  const sizes = ["Bytes", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 };
 
 export default function ClipboardItemCard({ item, onDelete, onSelect }: Props) {
@@ -15,6 +24,37 @@ export default function ClipboardItemCard({ item, onDelete, onSelect }: Props) {
   const truncatedContent = needsExpansion
     ? item.content.substring(0, maxPreviewLength) + "..."
     : item.content;
+
+  const handleItemClick = () => {
+    if (item.content_type === "file") {
+      // For files, expand/collapse instead of copying
+      setIsExpanded(!isExpanded);
+    } else {
+      // For text/image items, copy to clipboard
+      onSelect(item.content);
+    }
+  };
+
+  const handleFileDownload = async () => {
+    if (!item.file_path) return;
+    
+    try {
+      const fileContent = await invoke<number[]>("get_file_content", { filePath: item.file_path });
+      const fileName = item.file_name || "downloaded_file";
+      
+      // Convert number array to Uint8Array
+      const uint8Array = new Uint8Array(fileContent);
+      
+      const savedPath = await invoke<string>("save_received_file", { 
+        content: Array.from(uint8Array), 
+        fileName 
+      });
+      
+      console.log("File saved to:", savedPath);
+    } catch (error) {
+      console.error("Failed to download file:", error);
+    }
+  };
 
   const formatTimestamp = (timestamp: string) => {
     // Handle both timestamp formats - HH:MM:SS and full datetime
@@ -40,12 +80,13 @@ export default function ClipboardItemCard({ item, onDelete, onSelect }: Props) {
 
   return (
     <div
-      className={`clipboard-item ${isExpanded ? "expanded" : ""}`}
-      onClick={() => onSelect(item.content)}
+      className={`clipboard-item ${isExpanded ? "expanded" : ""} ${item.content_type === "file" ? "file-item" : ""}`}
+      onClick={() => handleItemClick()}
     >
       <div className="item-header">
         <div className="item-icon">
-          {item.content_type === "image" ? "🖼️" : "📝"}
+          {item.content_type === "image" ? "🖼️" : 
+           item.content_type === "file" ? "📁" : "📝"}
         </div>
 
         <div className="item-preview">
@@ -66,6 +107,12 @@ export default function ClipboardItemCard({ item, onDelete, onSelect }: Props) {
             </div>
             <span>•</span>
             <span>{formatTimestamp(item.timestamp)}</span>
+            {item.content_type === "file" && item.file_size && (
+              <>
+                <span>•</span>
+                <span>{formatFileSize(item.file_size)}</span>
+              </>
+            )}
             {needsExpansion && (
               <>
                 <span>•</span>
@@ -103,15 +150,27 @@ export default function ClipboardItemCard({ item, onDelete, onSelect }: Props) {
         <div className="item-expanded-content">
           <div className="expanded-text">{item.content}</div>
           <div className="expanded-actions">
-            <button
-              className="expanded-action-btn copy-button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelect(item.content);
-              }}
-            >
-              Copy
-            </button>
+            {item.content_type === "file" ? (
+              <button
+                className="expanded-action-btn download-button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleFileDownload();
+                }}
+              >
+                Download
+              </button>
+            ) : (
+              <button
+                className="expanded-action-btn copy-button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect(item.content);
+                }}
+              >
+                Copy
+              </button>
+            )}
             <button
               className="expanded-action-btn delete-button"
               onClick={(e) => {

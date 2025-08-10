@@ -203,6 +203,19 @@ export function useClipboard() {
   const selectItem = async (content: string) => {
     try {
       await invoke("set_clipboard_content", { content });
+      
+      // Find the item by content and move it to top
+      const itemToMove = items.find(item => item.content === content);
+      if (itemToMove) {
+        await invoke("move_clipboard_item_to_top", { id: itemToMove.id });
+        
+        // Update local state to reflect the change immediately
+        setItems(prev => {
+          const filtered = prev.filter(item => item.id !== itemToMove.id);
+          return [itemToMove, ...filtered];
+        });
+      }
+      
       // Note: Window stays open for continuous use
     } catch (error) {
       console.error("Failed to set clipboard content:", error);

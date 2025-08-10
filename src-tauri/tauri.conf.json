@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "cliped",
-        "transparent": false,
+        "transparent": true,
         "decorations": true,
         "fullscreen": false,
         "width": 500,
